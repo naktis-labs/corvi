@@ -223,7 +223,8 @@ The optional operator exposes these provisional API concepts, with names and fie
 | **MailForwarding** | External forwarding and its confirmation/expiration policy |
 | **MailRewrite** | Ordered/pattern-based address rewrite rules |
 | **MailIdentity** | Virtual view and sender identity over a mailbox |
-| **MailPolicy** | Allowed mail actions, data sensitivity handling and isolation behavior |
+| **MailPolicy** | Action-level grants and references to applicable disclosure filters; never broadens identity scope |
+| **MailFilterPolicy** | Declarative message visibility, classification, redaction, attachment and rendering restrictions (see ADR-0003) |
 | **MailCredential** | Scoped gateway authentication material, issuance/revocation lifecycle |
 
 **Mailbox lifecycle** must distinguish provider-managed creation/reconciliation from **External** existing mailboxes that Corvi merely accesses.

@@ -20,6 +20,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 **[ADR-0002: Product goals and future messaging extensibility](docs/adr/0002-product-goals-and-messaging-extensibility.md)** records a possible future extension of scoped personal access to SMS, Matrix, Discord and other authorized messaging systems. This is deliberately **deferred**: the current implementation remains email-first, and automated mailbox management remains an email-focused concern.
 
+**[ADR-0003: Mail filtering and disclosure policies](docs/adr/0003-mail-filtering-and-disclosure-policies.md)** defines concrete personal-mail filtering rules, sensitive-message detection, redaction, hide decisions, attachment restrictions, fail-closed behavior and enforcement across all read/search/event surfaces.
+
 > **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
 
 The license, stable API contracts and development workflow will be established as the implementation progresses.

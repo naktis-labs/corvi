@@ -157,6 +157,8 @@ Outbound SMTP submission must authenticate a credential and enforce both From he
 
 ### 4.3 Sensitive mail, content and attachment handling
 
+**Detailed filtering semantics:** See [ADR-0003: Mail filtering and disclosure policies](0003-mail-filtering-and-disclosure-policies.md) for matcher types, rule evaluation, conflict precedence, failure behavior, redaction and API-wide disclosure protections.
+
 Policies support action-level permissions (list/read/search/send/flags/delete/attachments, etc.) and content handling policies including denial, redaction, and optional quarantine of messages containing OTPs, account recovery links, credentials and other sensitive content.
 
 Security-sensitive filtering occurs **before** messages enter client-visible caches, indexes, snippets, search results, embeddings or notifications. Treat email content, links, and attachments as untrusted; never allow instructions inside messages to modify authorization or tool behavior. Strip/block remote HTML content and unsafe attachment types by policy. Redact secrets in traces/logs and protect signed attachment URLs.

@@ -2,7 +2,7 @@
 
 **Provider-agnostic, policy-driven mail access and infrastructure management.**
 
-Corvi is a planned open-source mail gateway and management platform from Naktis Labs. It is designed to let applications and AI agents use mail through scoped REST/MCP APIs and authenticated SMTP submission, while keeping upstream IMAP/SMTP connectivity and provider administration independent.
+Corvi is a planned open-source mail gateway and management platform from Naktis Labs. It has two complementary goals: **scoped access to the user's own email** for applications and AI agents, without handing out unrestricted mailbox credentials; and **declarative provisioning and management of automated mailboxes** for self-hosted services. These roles remain independently deployable. REST/MCP mail access and authenticated SMTP submission are separate from provider administration.
 
 ## Architecture
 
@@ -17,6 +17,8 @@ The key boundaries are:
 ## Design decisions
 
 Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architecture.md)** for the complete architectural decision, threat boundaries, identity and alias isolation requirements, data-plane behavior, provider resource model, certificate strategy, and phased implementation plan.
+
+**[ADR-0002: Product goals and future messaging extensibility](docs/adr/0002-product-goals-and-messaging-extensibility.md)** records a possible future extension of scoped personal access to SMS, Matrix, Discord and other authorized messaging systems. This is deliberately **deferred**: the current implementation remains email-first, and automated mailbox management remains an email-focused concern.
 
 > **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
 

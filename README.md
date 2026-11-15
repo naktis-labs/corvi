@@ -22,6 +22,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 **[ADR-0003: Mail filtering and disclosure policies](docs/adr/0003-mail-filtering-and-disclosure-policies.md)** defines concrete personal-mail filtering rules, sensitive-message detection, redaction, hide decisions, attachment restrictions, fail-closed behavior and enforcement across all read/search/event surfaces.
 
+**[ADR-0004: Pluggable gRPC policy decision engines](docs/adr/0004-pluggable-grpc-policy-engines.md)** proposes optional external authorization engines such as Cerbos or OPA adapters without making them mandatory for a standalone gateway.
+
 > **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
 
 The license, stable API contracts and development workflow will be established as the implementation progresses.

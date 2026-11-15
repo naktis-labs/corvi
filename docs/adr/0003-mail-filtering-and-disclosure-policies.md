@@ -132,7 +132,7 @@ spec:
       then:
         redact:
           - field: body.text
-            pattern: '\\bINV-[0-9]{8}\\b'
+            pattern: '\bINV-[0-9]{8}\b'
             replacement: "[REDACTED-REFERENCE]"
 ```
 

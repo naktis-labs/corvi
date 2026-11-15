@@ -25,6 +25,8 @@ A positive result at a later gate **cannot override** denial at an earlier gate.
 
 Sending and provider administration remain different authority domains. This ADR governs **disclosure of mail data**; it does not authorize management API writes or broaden SMTP sender permissions.
 
+**Optional external policy evaluation:** See [ADR-0004: Pluggable gRPC policy decision engines](0004-pluggable-grpc-policy-engines.md). An external policy decision point may restrict disclosure or return typed obligations, but Corvi must still locally enforce identity limits, mandatory sensitive-content filtering and sanitization.
+
 ## 1. Explicit resource boundary
 
 Keep `MailPolicy` as the action-level policy. Introduce an optional, reusable `MailFilterPolicy` (name provisional) for message-level exposure rules, referenced by `MailPolicy` or assigned to a specific `MailIdentity`.

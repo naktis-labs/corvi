@@ -3,6 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-11-15
 - **Updated:** 2026-11-16
+- **Distribution requirement:** WASM extension modules are delivered through OCI registries as OCI image manifests
 - **Related:** [ADR-0001: System architecture](0001-corvi-system-architecture.md), [ADR-0003: Mail filtering and disclosure policies](0003-mail-filtering-and-disclosure-policies.md)
 
 ## Context
@@ -17,7 +18,7 @@ WASM policies run inside the data-plane process through a constrained host ABI. 
 
 1. Ship a **built-in local policy evaluator** as the default. A standalone gateway requires no additional container, Kubernetes API, gRPC endpoint or WASM module.
 2. Define an internal **PolicyDecisionEngine** interface shared by built-in evaluation, optional **in-process sandboxed WASM**, and optional **external gRPC PDPs**. The policy engine must never become a control-plane webhook.
-3. Prefer **WASM for user-supplied or custom policy logic**. A sandboxed module consumes bounded, typed, allowlisted input and returns structured decisions and obligations, without requiring a second process or disclosure of mail metadata over a network.
+3. Prefer **WASM for user-supplied or custom policy logic**. Distribute executable policy modules as **OCI registry images**, resolve them to immutable digests, and execute the extracted WASM component in-process. A sandboxed module consumes bounded, typed, allowlisted input and returns structured decisions and obligations, without requiring a second process or disclosure of mail metadata over a network.
 4. Support gRPC adapters for existing engines. **Cerbos** exposes native gRPC resource checks; **OPA's Envoy plugin** implements Envoy `ext_authz` (HTTP-centric), requiring an adapter for mail operations. **OPA/Rego** policies may also be compiled to WASM, subject to OPA's own runtime ABI and built-in function limitations.
 5. Keep the Corvi data plane as **Policy Enforcement Point (PEP)**. Neither WASM nor gRPC can enlarge credential scope, fabricate recipient provenance, or suppress mandatory local safety filters.
 6. Keep **action authorization** and **message disclosure** logically separate. Evaluators may return bounded typed obligations; the core validates and executes redaction, hiding, attachment restrictions and content sanitization.
@@ -141,8 +142,10 @@ policyEngines:
 
   privacy:
     type: wasm
-    module: /etc/corvi/policies/privacy.wasm
+    image: ghcr.io/naktis-labs/corvi-policy-privacy@sha256:<manifest-digest>
     abi: corvi-policy-v1
+    registryAuth:
+      credentialFile: /run/secrets/registry-auth.json
     limits:
       memoryBytes: 16777216
       fuel: 1000000
@@ -172,7 +175,9 @@ Any Cerbos-specific adapter must translate Corvi request attributes and actions 
 
 ## 4. Sandboxed in-process WASM backend
 
-**Preferred extension path:** Embed Wasmtime in the Rust data plane and allow administrator-supplied policy modules to be loaded from a local path or from a control-plane-published, digest-pinned and validated policy bundle. A local file is sufficient for standalone operation; an operator is never required.
+**Preferred extension path:** Embed Wasmtime in the Rust data plane. Administrator-supplied executable policy modules are **packaged and distributed as OCI images from registries**, pinned to digests. The gateway can resolve and cache them itself in standalone mode; an operator is never required. Raw local `.wasm` files may be accepted by an explicitly labeled developer/test command, but are **not the supported deployment format** for installed policy modules.
+
+An OCI-distributed WASM module does **not** imply a separate running Linux container, Pod, OCI runtime or control-plane RPC. An OCI registry transports the package; Wasmtime executes the verified component **inside** Corvi.
 
 ### 4.1 Contract and module formats
 
@@ -234,6 +239,7 @@ Enforce:
 - Concurrency/backpressure limits so a slow policy cannot exhaust the gateway.
 - Digest pinning, signature verification where configured, provenance and local admin authorization for policy installation.
 - No in-process native shared libraries as an alternative execution path for untrusted policies.
+- OCI manifest digest and optional publisher trust verification **before** execution; do not allow a module to evade sandbox rules by changing packaging format.
 
 A trap, invalid return value, exceeded limit, unknown obligation or ABI mismatch results in **indeterminate → deny/hide** for any operation depending on that module, never a permissive fallback.
 
@@ -243,11 +249,36 @@ Policy modules produce `ALLOW`, `DENY`, `INDETERMINATE` and a bounded list of ty
 
 WASM can implement a custom classification rule over **explicitly permitted and bounded input fields**, but Corvi must parse MIME and control disclosure first. Feeding raw private email bodies to untrusted code is not automatic; explicit local administrator policy must approve the exact input fields. A WASM module itself should not be treated as more trustworthy than a remote PDP solely because it executes locally.
 
-### 4.4 Distribution and reload
+### 4.4 OCI image packaging
 
-In standalone mode, a local module path plus digest and configuration revision is enough. In managed deployments, the control plane may publish policy-module references/assets alongside a validated snapshot. The data plane validates and compiles the new module before atomically activating a policy generation. Retain last-known-good modules only when safe under the configured staleness/revocation policy.
+**OCI image manifests are mandatory for distributed WASM policy modules.** Use the CNCF TAG Runtime *Wasm OCI Artifact layout* where compatible: an `application/vnd.oci.image.manifest.v1+json` manifest with `config.mediaType: application/vnd.wasm.config.v0+json` and a single `application/wasm` layer containing the compiled policy component. This is an OCI **image-manifest-based non-container artifact**, not a Linux/amd64 image that kubelet is expected to run as a Deployment.
 
-Policy updates require cache invalidation using module digest, policy revision, message/classification version and credential scope. No operator, plugin or remote RPC is required for a WASM policy invocation.
+Reject unsupported manifest/config/media types, multiple ambiguous module layers, platform-specific container filesystems presented as policy modules, and unsupported imported capabilities. Validate the actual WASM binary and its required WIT ABI; media-type metadata alone is not proof of trust. Corvi-specific annotations may describe the policy ABI, input schema version, display name and build provenance, but **cannot grant additional host capabilities**. The manifest digest pins both module content and its metadata.
+
+The image reference is an **OCI registry address** (e.g. `ghcr.io/naktis-labs/corvi-policy-privacy@sha256:<digest>`). A human-friendly tag may be used to discover an image during development, but production activation resolves and records an immutable digest; mutable tags are not used as cache identity or a policy-evaluation dependency.
+
+The same artifact can be published with OCI-aware tooling such as ORAS, provided it preserves the expected image-manifest and layer media types. Registry compatibility, including registries that reject non-container image manifests, must be tested rather than assumed. These media types follow the current CNCF Wasm OCI layout guidance; if that guidance evolves, a future ADR or compatibility version may migrate the packaging rules.
+
+### 4.5 Registry access, trust and caching
+
+- Fetch over verified HTTPS, using scoped read-only registry credentials where needed. **Do not assume Kubernetes imagePullSecrets automatically authenticate a process using an OCI registry client.** A standalone gateway receives registry auth as a mounted file or workload identity; an operator may provision a Secret mount or an optional prefetch mechanism.
+- Verify content-addressed manifest/layer digests and sizes; enforce byte, layer-count, decompression, redirect and fetch-time limits.
+- Allow an explicit per-installation image signature/attestation trust policy (e.g. Sigstore verification); production configurations should be able to **require** verified publisher identity or signed digest before activation. Never infer trust merely from the registry name or the OCI media type.
+- Extract only expected module/config content into a content-addressed local cache. Do not run an OCI container, unpack arbitrary filesystem layers or execute an image entrypoint.
+- Precompile and validate policy components *before* switching active policy revisions, and bind the compiled module to its manifest digest and ABI version.
+- If a required policy's pinned image is not cached and its registry is unavailable, **fail closed** for operations requiring that policy. If a validated cached image exists, evaluate it without contacting the registry. The cache must be available across gateway restarts when offline operation is expected.
+- Cache and source policy modules independently of the control plane. No remote registry request is made **per mail request**, and registry or publisher outages never affect evaluation of already cached, still-valid modules.
+- Snapshot publication and module activation must be coordinated: only activate a new policy generation after its image digest, trusted publisher (when configured), ABI and resource limits have been validated. A previous generation can remain active only within its explicit expiry/revocation rules, never as a permissive fallback after a mandatory security change.
+
+### 4.6 Deployment modes and reload
+
+**Standalone:** A single Corvi container accepts OCI image references in its local configuration, fetches modules using an embedded registry client, and persists a verified cache. No extra registry sidecar, operator or runtime is necessary. For air-gapped deployments, allow explicitly prepopulating the content-addressed cache with the **same digest-verified OCI image**; the policy configuration still references its image digest.
+
+**Operator-managed:** The CRD/configuration snapshot identifies the image and digest; the operator may arrange registry credentials or prefetch content, but it does not enter the evaluation path. If the control plane delivers policy blobs, those blobs must remain verifiably associated with the pinned OCI manifest and signature policy. Kubernetes CSI certificates remain for gRPC mTLS, not for policy execution itself.
+
+Cache invalidation uses manifest digest, input schema/ABI, policy revision, message/classification revision and credential scope. A tag move must not silently change running policy behavior. A newly requested digest is validated and atomically activated; a missing/broken image never becomes an empty permit-all policy.
+
+The OCI provider **service** plugin images from ADR-0001 are a different class of deployment: the operator starts those as separate gRPC processes. A Corvi policy OCI **WASM image** is a loadable in-process code artifact, **not** a Deployment.
 
 ## 5. Data-minimization and message confidentiality
 
@@ -290,7 +321,9 @@ Required tests include:
 8. Certificate rotation and CA overlap do not permit downgrade to plaintext.
 9. Cache keys incorporate policy, module digest, and message revisions and are invalidated on revocation and policy changes.
 10. WASM modules with infinite loops, excessive memory, invalid imports, forbidden filesystem/network access or malformed obligations fail closed without crashing the gateway.
-11. OPA/Rego WASM bundles require their explicit adapter and cannot be loaded as Corvi WIT components by accident.
+11. OCI policy images with wrong media types, changed tags, incorrect digests, invalid signatures, excessive layers or corrupted cached content are rejected; valid pinned cached modules remain usable offline.
+12. Policy rollout never activates a snapshot that refers to a required OCI module which failed fetching or validation.
+13. OPA/Rego WASM bundles require their explicit adapter and cannot be loaded as Corvi WIT components by accident.
 
 ## Non-goals
 
@@ -305,8 +338,9 @@ Required tests include:
 - Whether the public integration interface should offer only Corvi-native gRPC, or also direct protocol-specific Cerbos/Envoy clients.
 - Precise typed input, output, obligation and filter-rule schema, including compatibility rules.
 - How to express contextual access grants without confusing them with maximum credential scope.
-- Versioned WIT policy schema, guest SDKs and acceptable module signing/rollout conventions.
+- Versioned WIT policy schema, guest SDKs, signature/attestation trust policy and OCI image publishing toolchain.
 - Exact Wasmtime fuel/memory/time budgets per action and the extent of allowed host functionality.
+- Registry auth formats, offline OCI cache provisioning, signature verification provider, and admission policy for non-digest-pinned tags.
 - OPA-WASM adapter lifecycle and upstream builtins compatibility.
 - PDP outage policy for in-flight paginated requests and streaming responses.
 - Cache/plan integration for expensive searchable-mail listings and query-based authorization.
@@ -314,4 +348,4 @@ Required tests include:
 
 ## Consequences
 
-Corvi can run custom sandboxed policy code in-process using WASM and integrate with existing gRPC authorization systems, while keeping a minimal single-container IMAP/SMTP deployment. The data plane remains the authority that **enforces** identity isolation and safe content projections. WASM and external PDPs are optional tools for expressing decisions, not a route around the privacy guarantees established by ADR-0003.
+Corvi can run OCI-packaged sandboxed WASM policy code in-process and integrate with existing gRPC authorization systems, while keeping a minimal single-container IMAP/SMTP deployment. The data plane remains the authority that **enforces** identity isolation and safe content projections. WASM and external PDPs are optional tools for expressing decisions, not a route around the privacy guarantees established by ADR-0003.

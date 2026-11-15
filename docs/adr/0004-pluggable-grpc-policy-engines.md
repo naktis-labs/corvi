@@ -376,9 +376,9 @@ Required tests include:
 9. Cache keys incorporate policy, module digest, and message revisions and are invalidated on revocation and policy changes.
 10. WASM modules with infinite loops, excessive memory, invalid imports, forbidden filesystem/network access or malformed obligations fail closed without crashing the gateway.
 11. OCI policy images with wrong media types, changed tags, incorrect digests, invalid signatures, excessive layers or corrupted cached content are rejected; valid pinned cached modules remain usable offline.
-11a. Release CI rejects native/volume image pairs with different WASM content or ABI; the image-volume source validates its mounted WASM hash against the expected release digest.
 12. Policy rollout never activates a snapshot that refers to a required OCI module which failed fetching or validation.
 13. OPA/Rego WASM bundles require their explicit adapter and cannot be loaded as Corvi WIT components by accident.
+14. Release CI rejects native/volume image pairs with different WASM content or ABI; the image-volume source validates its mounted WASM hash against the expected release digest.
 
 ## Non-goals
 

@@ -22,7 +22,7 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 **[ADR-0003: Mail filtering and disclosure policies](docs/adr/0003-mail-filtering-and-disclosure-policies.md)** defines concrete personal-mail filtering rules, sensitive-message detection, redaction, hide decisions, attachment restrictions, fail-closed behavior and enforcement across all read/search/event surfaces.
 
-**[ADR-0004: Pluggable policy evaluation with WASM and gRPC](docs/adr/0004-pluggable-grpc-policy-engines.md)** proposes sandboxed in-process WASM as the preferred extension mechanism, with optional gRPC authorization engines such as Cerbos. The built-in policy engine remains sufficient for a standalone gateway.
+**[ADR-0004: Pluggable policy evaluation with WASM and gRPC](docs/adr/0004-pluggable-grpc-policy-engines.md)** proposes sandboxed in-process WASM packaged as digest-pinned OCI images, with optional gRPC authorization engines such as Cerbos. Registry images are downloaded and cached, not run as additional containers. The built-in policy engine remains sufficient for a standalone gateway.
 
 > **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
 

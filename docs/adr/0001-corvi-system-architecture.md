@@ -70,10 +70,10 @@ The control plane can be run without a data plane. This supports management-only
 
 ### 1.3 Optional Kubernetes operator
 
-The operator:
+The operator (deployed using the [hardened bjw-s app-template chart model](0011-hardened-helm-deployment.md)):
 
 - Watches CRDs and converts desired state into control-plane operations. Uses the Kubernetes API directly for provider management persistence, `status.conditions` and `observedGeneration` for status, `resourceVersion` for optimistic updates, finalizers for cleanup, and `Lease` objects for leader election; **no operator SQL database**.
-- Deploys and supervises OCI provider-plugin Deployments/Services, including discovery, readiness, configuration and lifecycle.
+- Deploys and supervises OCI provider-plugin Deployments/Services, including discovery, readiness, configuration and lifecycle. It enforces **the same non-root, capability-free, no-privilege-escalation, read-only-root, RuntimeDefault-seccomp and no-default-service-account-token policy** for dynamically generated plugin and managed bridge Pods as Helm uses for static Pods. Incompatible managed images fail reconciliation (ADR-0011).
 - Generates or publishes normalized gateway configuration, and reports rollout status.
 - Configures mTLS certificate volumes and optional monitoring resources.
 
@@ -171,7 +171,7 @@ Provider forwarding, rewriting, catchalls, delegation and other upstream deliver
 
 - The data plane gets upstream mail credentials, including securely stored/provider-refreshed OAuth access tokens where enabled, but not provider administrative credentials. A provider OAuth token is never a Corvi client token; see [ADR-0008](0008-interactive-upstream-oauth.md).
 - The control plane may get provider admin credentials and temporary provider OAuth **onboarding** tokens for a strictly authorized account-connection flow, but must not gain unbounded access to message content. Ordinary configuration snapshots must not contain raw OAuth access or refresh tokens.
-- External provider plugins run with minimal filesystem, network and Kubernetes permissions; restrict egress to their intended provider endpoints where practicable.
+- External provider plugins **must run as numeric non-root with all capabilities dropped, privilege escalation prohibited, RuntimeDefault seccomp and read-only image root** in Kubernetes; restrict egress, writable mounts, and secret access to intended provider endpoints. Provider plugins, bridges, gateway, OAuth service and maintenance Jobs have **no Kubernetes API token by default**; only the dedicated namespaced operator SA gets explicit RBAC (ADR-0011).
 - OCI images should be digest-pinned, scanned, and deployable with restrictive security contexts.
 - Split administrative APIs from public mail APIs; protect internal configuration publication with strong authentication and independent authorization. Separate **mail-resource** and **administration** OAuth audiences: a mail OAuth token cannot manage upstream provider OAuth grants, provider mailboxes or administrative secrets. See [ADR-0009](0009-corvi-oauth-and-identity-grants.md).
 - Log privileged mutations and revocations; avoid storing full message bodies or secrets in administrative audit logs.
@@ -363,7 +363,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 ## 13. Architectural invariants to test in CI
 
-- A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state.
+- A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state. Helm uses [ADR-0011](0011-hardened-helm-deployment.md) rootless, readonly, no-capabilities, RuntimeDefault and narrow token/RBAC defaults.
 - A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
@@ -380,7 +380,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - Scraping metrics never triggers upstream API calls; metrics/OTLP outages do not block provisioning or mail operations.
 - Provider usage metrics report unavailable quotas as unsupported, not fabricated.
 - The integrated OAuth issuer, durable queue and Tasks reject ephemeral-only storage; SQLite is local/single-instance, while active/active replicas require PostgreSQL. Raw upstream mail never enters a client-visible index or shared cache before identity/disclosure filtering (ADR-0010).
-- OCI provider bridge requirements cannot deploy untrusted containers or request arbitrary secrets; bridge capability discovery is validated against administrator-approved runtime profiles.
+- OCI provider bridge requirements cannot deploy untrusted containers or request arbitrary secrets; bridge capability discovery is validated against administrator-approved **rootless/restricted** runtime profiles (ADR-0011).
 - Existing local bridges work without Kubernetes; loopback-only bridges are not silently exposed as routable Services; bridge secret/state and TLS identity remain isolated.
 - Kubernetes CSI/Certificate fallback does not introduce trust-manager or certificate downgrade dependencies.
 

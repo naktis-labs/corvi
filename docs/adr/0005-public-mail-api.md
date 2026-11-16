@@ -47,6 +47,8 @@ Reading, searching and listing are separately grantable; a credential need not h
 - For resource subscriptions, a single authenticated `subscriptions/listen` request may list **multiple permitted** `corvi:///identities/{identityId}/visible-mail` URIs, with an acknowledged authorized subset. No change event is emitted for a nonpermitted identity or for hidden-only changes.
 - Credential revocation, per-identity grant changes, and identity removal invalidate only the relevant authorizations and dependent state according to the configured revocation guarantees; they must never silently expand another identity's visibility.
 
+**Corvi-facing OAuth:** The REST/MCP authentication contract is further specified in [ADR-0009](0009-corvi-oauth-and-identity-grants.md): Authorization Code + PKCE for interactive apps, scoped Client Credentials for provisioned service principals, optional device authorization, and identity-specific consent/authorization details. Access-token scopes do not replace explicit identity grants. The mail API is an OAuth protected **resource server**; any built-in authorization server has separate OAuth endpoints and a separate grant lifecycle.
+
 **Non-goal:** A token with permission to manage mail-provider resources or a broadly named OAuth scope does not automatically get personal message access. Identity grants always remain explicit and enforceable. **Upstream mail-provider OAuth connections are separately authorized/account-bound administrative resources**, never client bearer tokens; see [ADR-0008](0008-interactive-upstream-oauth.md).
 
 ## 1. Resource model
@@ -116,7 +118,7 @@ Corvi derives header From and the **SMTP or JMAP submission envelope sender** fr
 
 For REST, `200` indicates an existing/replayed or immediately submitted receipt, while `202` indicates queued/accepted-for-processing; the documented response schema is the same. MCP returns the same structured `Submission` status, never a stronger delivery guarantee.
 
-**Agent confirmation:** Interactive MCP `mail_send` requires **MRTR form elicitation**, with a signed expiring `requestState` bound to the exact payload, principal, identity and idempotency key. On resume Corvi revalidates policy, identity, approval and replay protection before contacting SMTP. Only an explicitly scoped unattended-send grant may bypass this step. A model-generated claim of approval is not authorization; non-MRTR clients fail closed with `CONFIRMATION_REQUIRED`. REST sends retain their separate authorization/approval workflow.
+**Agent confirmation:** OAuth consent for `mail:messages:send` **does not** count as per-message approval. Interactive MCP `mail_send` requires **MRTR form elicitation**, with a signed expiring `requestState` bound to the exact payload, principal, identity and idempotency key. On resume Corvi revalidates policy, identity, approval and replay protection before contacting SMTP. Only an explicitly scoped unattended-send grant may bypass this step. A model-generated claim of approval is not authorization; non-MRTR clients fail closed with `CONFIRMATION_REQUIRED`. REST sends retain their separate authorization/approval workflow.
 
 ### Upstream protocol independence
 
@@ -127,10 +129,10 @@ The above operations remain the **same seven** public REST and MCP mail actions 
 The machine-readable source of truth is [`api/openapi.yaml`](../../api/openapi.yaml), using **OpenAPI 3.1** and JSON Schema 2020-12.
 
 - Prefix `/v1`; all JSON uses UTF-8; TLS is required on network-facing listeners or a trusted terminating proxy.
-- OAuth2/OIDC-issued and Corvi service bearer tokens are accepted only when explicitly configured; validate issuer, token audience for Corvi, expiry, authorized identity binding and action scopes on every request. **Never accept upstream OAuth access/refresh tokens from Fastmail, Google, Microsoft or other providers as Corvi access credentials.** Never accept provider or OAuth authorization-server credentials as Corvi mail API tokens.
+- OAuth2/OIDC-issued and Corvi service bearer tokens are accepted only when explicitly configured; validate issuer, **exact Corvi mail resource audience**, expiry, authorized OAuth **client identity**, active consented **per-identity grant** and requested action scope on every request. Optional integrated Corvi AS/externally federated OAuth behavior is specified in ADR-0009. OAuth scopes alone do not permit use of any identity. **Never accept upstream OAuth access/refresh tokens from Fastmail, Google, Microsoft or other providers as Corvi access credentials.** Never accept provider or OAuth authorization-server credentials as Corvi mail API tokens.
 - Errors use `application/problem+json` with a **stable `code`**, request `traceId`, generic `detail`, and appropriate HTTP status; never include subjects, OTPs, raw URLs or policy internals.
 - Include limits and `429` rate limiting; reject oversized bodies before expensive parsing.
-- Use `401` for unauthenticated, `403` for forbidden authorized actions, `404` for absent/hidden resources, `409` for stale cursor/idempotency conflicts, `422` for invalid requested send/recipient, and `503` for dependent upstream/policy unavailability.
+- Use `401` for unauthenticated with a Bearer `WWW-Authenticate` resource-metadata challenge, `403` with OAuth `insufficient_scope`/step-up guidance for a known authorized action lacking scopes, `404` for absent/hidden resources, `409` for stale cursor/idempotency conflicts, `422` for invalid requested send/recipient, and `503` for dependent upstream/policy unavailability. Scope-step-up must never reveal hidden identities or authorize the requested identity absent separately approved grants.
 - Reads must not mark messages read. Flags/move/delete/draft APIs and event subscriptions are **not in v1**; add them only with new permissions and filtering tests.
 - Provide an explicitly documented capability/reporting mechanism later if an installation supports queued delivery, indexing, or stronger idempotency. Do not infer these from a generic success status.
 

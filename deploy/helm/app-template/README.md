@@ -70,6 +70,12 @@ Provide bounded scratch via `emptyDir`; for SQLite/PVC mount use an explicitly t
 
 Images, optional read-only policy WASM image volumes, Secrets and CRDs are separate from runtime Kubernetes API credentials. `imagePullSecrets` do not require an API token in the app container.
 
+## Generated app-credential Secrets
+
+Token-issuing resources can request custom `spec.secretTemplate.metadata.name` and annotations. When a provider is bound to an active gateway, the generated Secret contains Corvi connection metadata and a scoped app credential; with **no `gatewayRef`**, it contains validated provider-native protocol endpoints and a newly issued provider app token **only when supported and safe**. A bound suspended/unavailable gateway does not trigger direct fallback. See [ADR-0014](../../../docs/adr/0014-generated-app-credentials-and-connection-secrets.md) and the [resource examples](../../examples/generated-connection-secrets.example.yaml).
+
+Do not grant the gateway, provider gRPC plugin, OAuth service or bridge Kubernetes API tokens to write Secrets. Use an optional, separately hardened and namespaced `corvi-credential-publisher` ServiceAccount/Role (or an explicitly enabled, narrowly scoped operator extension), with independently enforced Secret ownership/annotation policies. Kubernetes RBAC `create secrets` cannot be confined by `resourceNames` alone. The default operator app-template values intentionally do **not** include Secret creation permissions; these are design requirements for a future optional publication component, not a released publisher.
+
 ## RBAC and CRD lifecycle
 
 Install versioned Corvi CRDs independently via a bootstrap chart or GitOps manifests using the **installer's** privileged identity. Do **not** give Corvi's operator permission to install its own CRDs, write RBAC/ClusterRoleBindings or access arbitrary Secrets. Operator namespaces must be explicit.
@@ -94,6 +100,7 @@ Enforce `pod-security.kubernetes.io/enforce: restricted` on the namespace, toget
 - Verify `kubectl auth can-i` for forbidden actions under each SA, including all Secrets, RBAC mutation, token creation, Pod exec, node and namespace access. Confirm Role namespace and no wildcard authorization.
 - Test operator-created Deployment/StatefulSet admission independently, image signatures and pinned digests, invalid Secrets/Pod templates, NetworkPolicy/IPv6 and no unapproved internet egress. Test missing required refs, omitted vs invalid explicit gatewayRef, management-only provider reconciliation without any gateway CRD, and removal of identities from old gateway snapshots before detach/reparenting. Test that a CorviGateway never adopts a Helm-owned resource or allows unsafe security overrides.
 - Check rootless startup, ephemeral scratch, SQLite/PVC permissions, cert-manager CSI, graceful shutdown and no accidental sensitive exposure through logs/metrics/Helm history.
+- Verify generated Secret naming/annotation allowlists, collision rejection, gateway/direct endpoint and credential compatibility, reissuance on binding changes, and dedicated Secret-publisher RBAC/admission rules (ADR-0014).
 - Re-run on all chart/CRD/Kubernetes version upgrades, fail closed on incompatible deployment constraints.
 
 This guide describes intent and reproducible test inputs. It does **not** assert a released, tested Helm chart or a deployed Corvi Kubernetes workload.

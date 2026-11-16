@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://corvi.naktis.eu/schemas/mail-resource-ownership/v1alpha1",
   "title": "Corvi directional mail-resource parent reference contract (design only)",
-  "description": "Validates required same-namespace parent reference SHAPES for three namespaced Corvi resources. Not full Kubernetes CRD manifests; actual CRDs MUST declare structural OpenAPI v3, RBAC, status subresources and use controller lookups to enforce referential integrity. See ADR-0013.",
+  "description": "Checks optional MailProvider.gatewayRef and required Mailbox.providerRef and MailIdentity.mailboxRef reference shapes. A provider without gatewayRef is a valid management-only provider, never automatically attached. These are design contracts, NOT structural Kubernetes CRD manifests; see ADR-0013.",
   "oneOf": [
     {
       "$ref": "#/$defs/mailProvider"
@@ -55,16 +55,13 @@
     },
     "mailProviderSpec": {
       "type": "object",
-      "required": [
-        "gatewayRef"
-      ],
       "properties": {
         "gatewayRef": {
           "$ref": "#/$defs/localRef"
         }
       },
       "additionalProperties": true,
-      "description": "Reference contract ONLY; full spec fields and policy validation are defined in separate CRD designs."
+      "description": "Optional, singular, same-namespace gatewayRef. Absence means provider management only, no gateway mail access. Other provider settings are specified by future full CRD schema."
     },
     "mailboxSpec": {
       "type": "object",
@@ -167,16 +164,18 @@
   },
   "x-corvi-ref-chain": {
     "required": {
-      "MailProvider.spec.gatewayRef": "CorviGateway.metadata.name",
       "Mailbox.spec.providerRef": "MailProvider.metadata.name",
       "MailIdentity.spec.mailboxRef": "Mailbox.metadata.name"
     },
-    "namespace": "All parent resources MUST exist in the same namespace as the child. Reject missing or cross-namespace refs at controller reconciliation, not by JSON Schema alone.",
-    "cardinality": "One parent per resource; parent can have many children.",
-    "graph": "Do not duplicate the inverse child lists in CorviGateway; derive children via indexes.",
-    "security": "Reparenting invalidates old gateway access first. References do not imply authorization. Do not cascade-delete upstream mail, Secrets or OAuth grants.",
+    "namespace": "Any specified reference MUST point to a parent in the same namespace; missing required parents or an invalid specified gateway fail closed. Omitted gatewayRef is valid, not an error.",
+    "cardinality": "MailProvider has zero or one gateway; Mailbox exactly one provider; MailIdentity exactly one mailbox. Each parent can have many children. A MailProvider CRD cannot be shared by multiple independent CorviGateways.",
+    "graph": "Gateway has no inverse provider/mailbox/identity lists. Unbound providers are excluded from every gateway's effective mail-identity view.",
+    "security": "Attaching/rebinding a provider requires scoped activation and rechecks of OAuth grants/audience. Detach revokes gateway access before any other action; never auto-reuse old consent. Do not cascade-delete upstream mail or secrets.",
     "publication": "Atomic versioned gateway snapshots; gateway Pods do not query Kubernetes API.",
-    "configuration": "Helm-only/standalone installations use the same logical graph without requiring CRDs.",
-    "crdStatus": "Statuses are separate Kubernetes subresources; no secrets or raw message data in status."
+    "configuration": "Standalone and Helm-direct configurations use the same logical optional gateway association without requiring CRDs.",
+    "crdStatus": "Statuses are separate Kubernetes subresources; no secrets or raw message data in status.",
+    "optional": {
+      "MailProvider.spec.gatewayRef": "CorviGateway.metadata.name (if present; omission = management-only)"
+    }
   }
 }

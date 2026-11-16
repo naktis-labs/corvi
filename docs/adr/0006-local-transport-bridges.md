@@ -24,6 +24,8 @@ Each MailProvider/Mailbox resolution explicitly declares a transport topology:
 
 These are deployment/transport choices, **not different mail access APIs**. A bridge-backed physical Mailbox supports the same `MailIdentity`, per-identity permissions, safe message projections, REST/MCP tools, SMTP sender enforcement and isolation rules as a direct mailbox. One client token can span a direct mailbox and bridge-backed mailboxes without knowing the difference; explicit `identityId` still selects a single authorized view.
 
+**Distinction from native JMAP:** This ADR's `direct`/`existingBridge`/`managedBridge` classifications describe **IMAP/SMTP connectivity topologies**. Native JMAP is a separate **upstream protocol** (RFC 8620/8621) implemented in Corvi itself and normally connected directly via authenticated HTTPS, with no bridge dependency. Read and submission protocols are independently selected. See [ADR-0007](0007-native-jmap-transport.md) and [the provider-neutral transport schema](../../api/mail-transport.schema.json); do not attempt to deploy a local bridge simply because the provider advertises JMAP.
+
 Provider plugins can be **transport-only**, and the bridge requirement does **not** imply the provider supports administration of remote domains, mailboxes, aliases or quotas. Unsupported administrative operations must be reported as unsupported.
 
 ## 2. OCI metadata-assisted discovery

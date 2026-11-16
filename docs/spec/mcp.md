@@ -6,6 +6,7 @@
 - **Additional v1 capabilities:** MRTR elicitation, scoped resource subscriptions, optional Tasks extension
 - **Shared API decision:** [ADR-0005](../adr/0005-public-mail-api.md)
 - **Machine-readable MCP tool schemas:** [`api/mcp-tools.json`](../../api/mcp-tools.json)
+- **Machine-readable MCP resource schemas:** [`api/mcp-resources.json`](../../api/mcp-resources.json)
 - **REST peer contract:** [`api/openapi.yaml`](../../api/openapi.yaml)
 
 This specification describes the **personal-mail data-plane MCP server**, not the Kubernetes/operator/provider-administration API. The MCP endpoint cannot create domains, aliases, physical mailboxes or provider credentials. Such functionality belongs to a separately authenticated control-plane interface.
@@ -23,7 +24,7 @@ Corvi targets the published **MCP 2026-07-28** revision.
 - Every modern HTTP request carries `MCP-Protocol-Version: 2026-07-28`; the body metadata must agree with it.
 - Include `Mcp-Method` and, when applicable, `Mcp-Name` headers as required by the transport. The request headers must match the method/tool body.
 - Successful results include `resultType: "complete"`. An unsupported protocol version produces the standard MCP `UnsupportedProtocolVersionError`, with supported versions listed, not a successful empty result.
-- Support `tools/list` and `tools/call`, MRTR for send approval, narrowly scoped `resources/list`/`resources/read` + `subscriptions/listen` for caller-visible inbox change notices, and the optional Tasks extension when backed by durable state. Raw message resources, prompts, model sampling and unrestricted server-initiated elicitation remain excluded.
+- Support `tools/list` and `tools/call`, MRTR for send approval, **read-only context resources via `resources/list`/`resources/read`**, per-identity visible-mail revision resources + `subscriptions/listen`, and the optional Tasks extension when backed by durable state. **No raw message resources**, prompts, model sampling or unrestricted server-initiated elicitation.
 - An optional **stdio** adapter may be offered for local, trusted hosts; it must use the same policy engine and tools, and must not implicitly become administrator-privileged.
 - `2025-11-25` and other legacy handshake-era compatibility is **deferred**. If enabled, implement the old lifecycle deliberately and test a separate protocol adapter. Do not advertise an unsupported revision.
 
@@ -209,9 +210,52 @@ Example `InputRequiredResult` (schema shape must be tested against MCP 2026-07-2
 
 MRTR provides a host-mediated approval UI, **not cryptographic proof of human consent** from an untrusted client. The server must enforce unattended-use boundaries, audit decisions, and prevent duplicate sending independently. If a future tool needs both MRTR and Tasks, complete approval **before** materializing a task.
 
-## 5. Filtered subscriptions for incoming mail and task status
+## 5. Read-only MCP context resources
 
-Support MCP `subscriptions/listen` over a long-lived **Streamable HTTP POST response**, not legacy `resources/subscribe` or a separate GET stream. To support new-mail notifications using **standard MCP resource updates**, introduce exactly one resource kind:
+Corvi also supports MCP **resources for host-selected, read-only context**, separate from mail operation tools. A resource URI identifies context, not a new mail read permission or capability URL. The server's advertised `resources` capability supports `resources/list`, `resources/read`, optionally `notifications/resources/list_changed` and `subscriptions/listen`. The full machine-readable catalogue, JSON Schemas and access requirements are in [`api/mcp-resources.json`](../../api/mcp-resources.json).
+
+| URI | Read-only payload | Authorization |
+| --- | --- | --- |
+| `corvi:///context/overview` | Server/API version, supported features, high-level privacy model | Any valid Corvi mail data-plane credential |
+| `corvi:///context/identities` | **All caller-discoverable mail identities**, each with its own effective permissions, including identities from different physical mailboxes/providers | `mail:identities:list`; filter the list per-identity |
+| `corvi:///context/policy-summary` | Safe guidance about disclosure, hidden results, send approval and privacy limits | Any valid Corvi mail data-plane credential; never expose private matcher rules |
+| `corvi:///identities/{identityId}/context` | One discoverable identity's address/display name, effective permissions, optional isolation-assurance label, send-approval mode and safe guidance | The selected identity must be discoverable under `mail:identities:list` |
+| `corvi:///identities/{identityId}/visible-mail` | Only the caller-scoped opaque visible-inbox revision | Both `mail:messages:list` and `mail:messages:subscribe` for this identity |
+
+**Design intent:** `corvi:///context/identities` mirrors `mail_list_identities` but serves clients that assemble resource context without asking a model to call a tool; both must return the **same policy-filtered identity set and per-identity permissions**. `corvi:///context/policy-summary` describes safe *client behavior*, not the internal matching logic, sensitive-rule definitions, or whether a specific message was filtered. Per-identity context must not reveal raw provider IDs, upstream credentials, mailbox routing, inaccessible aliases, another identity's grants or private policy source.
+
+**Discovery:** `resources/list` returns **concrete, already-authorized URIs**. For a credential granted identity A and identity B, the list can contain both `corvi:///identities/A/context` and `corvi:///identities/B/context`, with no additional token or MCP connection. The `{identityId}` strings in this document are schema notation, not literal exposed resources. In v1 Corvi does **not** advertise open-ended `resources/templates/list`; callers discover instantiated URIs via `resources/list`. Guessed or revoked identity URIs get the same non-enumerating not-found response as other inaccessible resources.
+
+**Wire format:** `resources/read` returns `resultType: "complete"` and a `contents` array with the requested URI, `mimeType: "application/json"` and a JSON-serialized `text` payload. The decoded payload must validate against its corresponding `api/mcp-resources.json` schema. Every `resources/list` and `resources/read` result has `ttlMs: 0, cacheScope: "private"` to prevent stale or cross-credential identity/policy context, including for overview and high-level guidance.
+
+**Updates:** Changes to the discoverable resource set can trigger `notifications/resources/list_changed` only for authenticated listeners entitled to receive them; context resources can be included in `subscriptions/listen` and emit `notifications/resources/updated` when their **caller-visible** content changes. Version counters, update events and timing must not reflect changes to hidden mail or ungranted identities. Existing `visible-mail` revisions retain their stricter message-disclosure gates. Token expiry, grant revocation and policy changes cause reauthorization on each read and notification.
+
+**Not message resources:** No `corvi:///messages/{id}` resource, raw message bytes, attachment resource, unfiltered thread summary, private policy matcher dump, or administrator configuration resource is exposed. Use the seven scoped `mail_*` tools for message operations. Neither `resources/read` nor resource subscription can bypass `MailPolicy`, `MailIdentity` provenance isolation or `MailFilterPolicy`.
+
+Example read result for a two-identity token (illustrative values, not deployed data):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "resultType": "complete",
+    "contents": [
+      {
+        "uri": "corvi:///context/identities",
+        "mimeType": "application/json",
+        "text": "{\"items\":[{\"id\":\"identity-a\",\"address\":\"a@example.com\",\"permissions\":[\"mail:messages:read\"]},{\"id\":\"identity-b\",\"address\":\"b@example.org\",\"permissions\":[\"mail:messages:send\"]}]}"
+      }
+    ],
+    "ttlMs": 0,
+    "cacheScope": "private"
+  }
+}
+```
+
+## 6. Filtered subscriptions for incoming mail and task status
+
+Support MCP `subscriptions/listen` over a long-lived **Streamable HTTP POST response**, not legacy `resources/subscribe` or a separate GET stream. To support new-mail notifications using **standard MCP resource updates**, use the existing **visible-mail revision** resource kind, in addition to the context resources from §5:
 
 ```text
 corvi:///identities/{identityId}/visible-mail
@@ -222,7 +266,7 @@ corvi:///identities/{identityId}/visible-mail
 - When the **caller-visible sanitized projection** changes, emit `notifications/resources/updated` for that URI, with the standard subscription metadata; clients refetch through `mail_list` or `mail_search`. Hidden mail arrivals, deletions, reclassifications or other invisible changes must **not** change the revision or trigger notifications. If classification is indeterminate, fail closed.
 - On listen, resource read **and before each delivery**, enforce authentication, token lifetime, identity grants, current policy and visibility; terminate or suppress revoked streams. Disallow cross-identity subscriptions and unauthorized task IDs.
 - Notifications are **best-effort change hints**, not durable message delivery, replay or a history. They can be coalesced or lost on disconnect; clients refetch after initial subscription and reconnection. Bound stream count, heartbeat, writes and per-principal resource URI lists. In a multi-replica gateway, enable event subscriptions only if correctly scoped fan-out is available; the core read/send path never depends on the optional event bus.
-- No general-purpose raw-message MCP resources are added. The resource exists only to support safe `notifications/resources/updated` signaling.
+- No general-purpose raw-message MCP resources are added. The visible-mail resource exists only for safe `notifications/resources/updated` signaling; context resources are separate, bounded, read-only context projections.
 
 Example `subscriptions/listen` request (with normal version metadata and HTTP headers):
 
@@ -247,7 +291,7 @@ Example `subscriptions/listen` request (with normal version metadata and HTTP he
 
 The same listen stream may receive **Tasks extension** status notifications: the client requests `notifications.taskIds` and, when authorized, receives `notifications/tasks`, which can contain a filtered completed task result. Task subscriptions require per-request `io.modelcontextprotocol/tasks` extension opt-in and task ownership validation. Task statuses may alternatively be polled.
 
-## 6. Tasks extension for long-running operations
+## 7. Tasks extension for long-running operations
 
 Support the **official optional extension** `io.modelcontextprotocol/tasks`. Initially **`mail_search` is the only task-eligible tool**; add task-backed synchronization or bulk classification only after specifying their separate operations, quotas and permissions. Protocol methods are **`tasks/get`, `tasks/update`, `tasks/cancel`**, not extra mail tools.
 
@@ -263,7 +307,7 @@ Support the **official optional extension** `io.modelcontextprotocol/tasks`. Ini
 
 For `mail_search`, the eventual completed tool result uses the **same JSON Schema, identity, search/filter/pagination and disclosure semantics** as synchronous `mail_search`. Cancellation must not mark messages read or mutate upstream mail.
 
-## 7. Cursors, consistency and error mapping
+## 8. Cursors, consistency and error mapping
 
 ### Cursors
 
@@ -293,7 +337,7 @@ Proposed tool-visible codes include:
 
 Error messages never return message subject, sender, matched security rule, OTP, reset URL, hidden identity, raw upstream UID or provider credentials. Do not distinguish hidden messages from nonexistent messages in either JSON-RPC codes or human-readable text.
 
-## 8. Mandatory filtering invariants
+## 9. Mandatory filtering invariants
 
 The public MCP adapter must call the same application service and policy pipeline as REST. In particular:
 
@@ -307,26 +351,28 @@ The public MCP adapter must call the same application service and policy pipelin
 
 A filtered-out message cannot be inferred from search hit counts, thread placeholders, "missing" list offsets or success/error distinctions. A visible but redacted message does not gain a hidden raw-text alternative.
 
-## 9. Conformance and implementation guidance
+## 10. Conformance and implementation guidance
 
-- Validate `api/mcp-tools.json` against MCP's contemporary tool schema, and test example `tools/call` and responses against a current protocol fixture harness. The manifest is a **source document**, not a complete `tools/list` JSON-RPC message.
+- Validate `api/mcp-tools.json` against MCP's contemporary tool schema, and test example `tools/call` and responses against a current protocol fixture harness. Validate **`api/mcp-resources.json`** payloads against their JSON Schemas and ensure that `resources/list`, `resources/read` and change notices follow MCP 2026-07-28. The catalogues are design documents, not wire messages.
 - Keep input/output schema and permission mappings in sync with `api/openapi.yaml`. Both protocol adapters should call one Rust service, not maintain duplicate business logic.
 - Test modern `server/discover`, per-request version metadata, `Mcp-Method`/`Mcp-Name`/version-header validation, origin/host security, the lack of session assumptions and proper result `resultType`.
 - Test `tools/list` with two different principals, cached tool metadata, credentials revoked between calls and public/private cache hints.
 - Test a single token granting multiple identities on distinct physical mailboxes/providers: identity discovery lists each authorized identity with its own permissions, the client switches identities across successive tool calls without reauthentication, and cross-identity privilege escalation is denied.
 - Test a single `subscriptions/listen` containing multiple permitted identity URIs, a mix of authorized/unauthorized identities, and identity-specific revocation; ensure no unfiltered event or resource-state leakage.
+- Test all context resources for two identities across separate upstream mailboxes with different permissions; context identities must exactly match `mail_list_identities`, per-identity summaries must not union grants, guessed URIs must not enumerate other identities, and policy-summary must not reveal internal sensitive matching rules.
+- Test resource list/read cache hints (`ttlMs: 0`, `cacheScope: private`), context subscriptions and resource-list change notices after grant revocation, plus no context event for hidden-only mailbox activity.
 - Test the same full fixture corpus through MCP and REST for hidden IDs, redaction, metadata/snippet leaks, count-free pagination, big attachments and stale cursors.
 - Test sends with approved sender identity, disallowed recipient, duplicate idempotency key, altered request under same key, queued delivery, unknown SMTP acceptance, and direct-relay process restart.
 - Never send user email bodies to remote MCP hosts, LLM providers or logs **except through the user's intended, explicitly authorized tool invocation**. Tool return content can be passed by clients to models; policies should default to narrower exposure for agent principals.
 - No data-plane operation should depend on the provider-management gRPC service or Kubernetes operator; optional external PDPs may be separately required by explicitly configured policies.
 
-## 10. Agent skill (future deliverable)
+## 11. Agent skill (future deliverable)
 
-The MCP implementation must ship with a documented, versioned agent skill at a planned location such as `skills/corvi-mcp/SKILL.md`, with examples for configuring the MCP endpoint, **discovering and switching between multiple authorized mailboxes/identities using one token**, reading/searching safely, interpreting hidden/redacted results, **fulfilling MRTR approvals**, **subscribing to visible-mail resource changes for multiple identities**, **polling and cancelling Tasks**, generating and retrying idempotency keys, and avoiding prompt injection from mail content.
+The MCP implementation must ship with a documented, versioned agent skill at a planned location such as `skills/corvi-mcp/SKILL.md`, with examples for configuring the MCP endpoint, **discovering and switching between multiple authorized mailboxes/identities using one token**, **reading safe MCP context resources for identity selection and usage guidance**, reading/searching safely, interpreting hidden/redacted results, **fulfilling MRTR approvals**, **subscribing to visible-mail resource changes for multiple identities**, **polling and cancelling Tasks**, generating and retrying idempotency keys, and avoiding prompt injection from mail content.
 
 **Do not publish a skill describing tools as implemented until the server exists and fixtures pass.** The skill must be treated as guidance, not a substitute for any server-side authorization.
 
-## 11. Normative MCP references
+## 12. Normative MCP references
 
 - [MCP 2026-07-28 announcement](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
 - [MCP protocol 2026-07-28 changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
@@ -335,5 +381,6 @@ The MCP implementation must ship with a documented, versioned agent skill at a p
 - [MCP 2026-07-28 MRTR and stateless core](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
 - [Official MCP Tasks extension](https://tasks.extensions.modelcontextprotocol.io/specification/2026-07-28/tasks)
 - [MCP subscriptions SDK guidance](https://ruby.sdk.modelcontextprotocol.io/server/subscriptions/)
+- [MCP 2026-07-28 Resource specification](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)
 
 Protocol-specific claims above apply to the pinned MCP revision, not automatically to older MCP hosts or future drafts.

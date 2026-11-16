@@ -21,6 +21,7 @@ The key boundaries are:
 - **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
 - **Native JMAP:** Direct RFC 8620/8621 HTTPS access to mail, synchronization, blobs and email submission through the in-process Rust gateway, with Fastmail as the first interoperability target. JMAP does **not** require a bridge, proxy or provider plugin.
 - **Interactive upstream OAuth:** Connect supported mail providers through their browser consent screen using Authorization Code + PKCE; support registered hosted callbacks, local CLI-assisted loopback login and provider-supported device grants, with encrypted refresh tokens and separate Corvi client credentials. Provider-specific OAuth registration restrictions remain explicit.
+- **Corvi client OAuth:** A built-in optional OAuth issuer and/or trusted external OIDC integration protects Corvi REST/MCP with consented **per-identity, per-action grants**, short-lived revocable tokens, Authorization Code + PKCE, and restricted Client Credentials for agents/services. Includes MCP CIMD support, step-up, and a standalone issuer without mandatory Kubernetes.
 - **Observability:** OpenTelemetry and Prometheus/OTLP, with provider plugins acting as exporters. TLS/mTLS is mandatory for internal gRPC, and Kubernetes may opportunistically use cert-manager's CSI driver.
 
 **Namespace convention:** Corvi-owned API groups and metadata use the `naktis.eu` domain, generally under `corvi.naktis.eu` (for example, `mail.corvi.naktis.eu`). OCI reverse-DNS annotation keys use `eu.naktis.corvi.*`. Third-party registry hosts and documentation URLs retain their original domains.
@@ -42,6 +43,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 **[ADR-0007: Native JMAP mail transport](docs/adr/0007-native-jmap-transport.md)** adds provider-neutral JMAP reading, searching, synchronization and `EmailSubmission` sending alongside IMAP/SMTP, while preserving identity grants and disclosure filtering. The [transport JSON Schema](api/mail-transport.schema.json) models separate read/submission protocols and prohibits implicit protocol fallback.
 
 **[ADR-0008: Interactive upstream provider OAuth](docs/adr/0008-interactive-upstream-oauth.md)** defines browser/CLI provider consent, PKCE/issuer/redirect protections, token storage and refresh, upstream account binding and the separation from client-facing Corvi OAuth. A [proposed provider OAuth descriptor schema](api/upstream-oauth.schema.json) specifies enrollment capability discovery, client registration and supported protocol mechanisms.
+
+**[ADR-0009: Corvi client OAuth and identity grants](docs/adr/0009-corvi-oauth-and-identity-grants.md)** establishes OAuth authorization-server/resource-server behavior, independent external OIDC login, per-MailIdentity consent through OAuth RAR, trusted client registration, machine credentials, refresh and revocation. The [proposed OAuth issuer/grant schema](api/corvi-oauth.schema.json) documents the design separately from provider OAuth in ADR-0008.
 
 ## Proposed public API specifications
 

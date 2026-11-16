@@ -71,6 +71,16 @@ Reject mismatched `Host`, unexpected browser `Origin`, unsupported media types, 
 
 Remote MCP authentication follows MCP OAuth protected-resource guidance. Publish protected resource metadata, identify permitted authorization servers, and validate issuer, **audience/resource binding**, signature (or introspection), expiration, and Corvi-specific identity/action grants. Access tokens must be issued for Corvi, not simply accepted because another service trusts the same OIDC provider. Support issuer-approved scopes and credentials only where configured. Client-declared software identity from `_meta` never substitutes for these checks.
 
+### One client and token, multiple mailboxes/identities
+
+**One authenticated MCP client may use any number of identities explicitly authorized by its access token/credential**, including identities backed by **different physical mailboxes and upstream accounts/providers**. There is **no one-token-per-mailbox**, one-MCP-session-per-identity, or one-server-instance-per-identity requirement.
+
+The credential resolves to an identity-scoped authorization map (`identityId -> allowed actions + applicable policies`). `mail_list_identities` returns the full caller-discoverable set and the **effective permissions of each identity individually**, not a union of permissions applicable to all. One client can invoke `mail_list` for one identity, `mail_search` for another, and `mail_send` for a third, all over the same authenticated MCP endpoint/connection.
+
+Each call must carry exactly one explicit `identityId` (except `mail_list_identities`); resolve it against the authorized map and the trusted Corvi mailbox configuration. A credential's broad OAuth scope name or global access to the MCP endpoint never implicitly authorizes an unlisted identity. Identity A's `mail:messages:read` does **not** authorize reads under B, even if both identities share an underlying IMAP inbox. Isolation/provenance and content filters remain identity-specific; **no merged cross-identity search** is exposed in v1.
+
+The same identity binding applies to attachments, cursors, send idempotency records, MRTR approval state, task IDs/results, and subscription URIs/revisions. Revoked identity grants must not be kept alive by an existing HTTP stream or queued task. Authentication determines **who** the client is, while per-call identity/action authorization determines **which mailbox view** that client may operate on.
+
 ### Output, caching and privacy
 
 For protocol `2026-07-28`, list results include `ttlMs` and `cacheScope`; start with **`ttlMs: 0`, `cacheScope: "private"`** for `tools/list`. Permission-dependent tool visibility must not be cached across principals. Deterministic tool ordering is preferred.
@@ -108,7 +118,7 @@ The **exact proposed seven tools** and machine-readable input/output JSON Schema
 
 **Tool discovery is not authorization.** Tool descriptions and annotations (including `readOnlyHint`) are advisory to clients; Corvi evaluates grants, resource membership, filtering and rate limits on every call. The list of tools may be restricted by principal permissions, but a leaked or cached tool definition does not confer access.
 
-All input schemas reject unknown fields. Every mail operation other than `mail_list_identities` requires an explicit `identityId`. A guessed `messageId` or `submissionId` never grants access. Do not add tools that accept upstream IMAP credentials or bypass the Corvi action model.
+All input schemas reject unknown fields. Every mail operation other than `mail_list_identities` requires an explicit `identityId`, including when a token is authorized for multiple identities. The caller may change that selection between tool calls **without obtaining a new token or reconnecting**. A guessed `messageId` or `submissionId` never grants access. Do not add tools that accept upstream IMAP credentials or bypass the Corvi action model.
 
 ## 3. Input/output semantics
 
@@ -116,7 +126,7 @@ All input schemas reject unknown fields. Every mail operation other than `mail_l
 
 - **Input:** `{}` (no arguments).
 - **Output:** `{ "items": [IdentityView, ...] }`.
-- Identity entries expose only address/display name, opaque ID and the calling principal's permitted actions. Do not return upstream credentials, hidden aliases or provider administration endpoints.
+- Identity entries expose only address/display name, opaque ID and the calling principal's **per-identity permitted actions**. A single call may return multiple entries backed by separate physical mailboxes or providers. Do not return upstream credentials, hidden aliases or provider administration endpoints.
 
 ### `mail_list`
 
@@ -207,8 +217,8 @@ Support MCP `subscriptions/listen` over a long-lived **Streamable HTTP POST resp
 corvi:///identities/{identityId}/visible-mail
 ```
 
-- `resources/list` exposes only these resource URIs for identities where the principal has **both** `mail:messages:list` and `mail:messages:subscribe`. `resources/read` returns only `identityId` and an opaque, policy-and-principal-scoped `revision` marker. It does not expose message bodies, IDs, senders, subjects, counts, attachment URLs or raw MIME.
-- Clients use `subscriptions/listen` with `notifications.resourceSubscriptions` containing explicitly authorized resource URIs. The first notification is `notifications/subscriptions/acknowledged` identifying the honored subset.
+- `resources/list` exposes only these resource URIs for identities where the principal has **both** `mail:messages:list` and `mail:messages:subscribe`. A client with grants on multiple identities can receive **one authorized URI per identity**. `resources/read` returns only `identityId` and an opaque, policy-and-principal-scoped `revision` marker. It does not expose message bodies, IDs, senders, subjects, counts, attachment URLs or raw MIME.
+- Clients use **one** `subscriptions/listen` request with `notifications.resourceSubscriptions` containing **multiple** explicitly permitted resource URIs if desired. The first notification is `notifications/subscriptions/acknowledged` identifying the honored subset; unauthorized identities must not generate events, and responses must not expose hidden identity details.
 - When the **caller-visible sanitized projection** changes, emit `notifications/resources/updated` for that URI, with the standard subscription metadata; clients refetch through `mail_list` or `mail_search`. Hidden mail arrivals, deletions, reclassifications or other invisible changes must **not** change the revision or trigger notifications. If classification is indeterminate, fail closed.
 - On listen, resource read **and before each delivery**, enforce authentication, token lifetime, identity grants, current policy and visibility; terminate or suppress revoked streams. Disallow cross-identity subscriptions and unauthorized task IDs.
 - Notifications are **best-effort change hints**, not durable message delivery, replay or a history. They can be coalesced or lost on disconnect; clients refetch after initial subscription and reconnection. Bound stream count, heartbeat, writes and per-principal resource URI lists. In a multi-replica gateway, enable event subscriptions only if correctly scoped fan-out is available; the core read/send path never depends on the optional event bus.
@@ -303,6 +313,8 @@ A filtered-out message cannot be inferred from search hit counts, thread placeho
 - Keep input/output schema and permission mappings in sync with `api/openapi.yaml`. Both protocol adapters should call one Rust service, not maintain duplicate business logic.
 - Test modern `server/discover`, per-request version metadata, `Mcp-Method`/`Mcp-Name`/version-header validation, origin/host security, the lack of session assumptions and proper result `resultType`.
 - Test `tools/list` with two different principals, cached tool metadata, credentials revoked between calls and public/private cache hints.
+- Test a single token granting multiple identities on distinct physical mailboxes/providers: identity discovery lists each authorized identity with its own permissions, the client switches identities across successive tool calls without reauthentication, and cross-identity privilege escalation is denied.
+- Test a single `subscriptions/listen` containing multiple permitted identity URIs, a mix of authorized/unauthorized identities, and identity-specific revocation; ensure no unfiltered event or resource-state leakage.
 - Test the same full fixture corpus through MCP and REST for hidden IDs, redaction, metadata/snippet leaks, count-free pagination, big attachments and stale cursors.
 - Test sends with approved sender identity, disallowed recipient, duplicate idempotency key, altered request under same key, queued delivery, unknown SMTP acceptance, and direct-relay process restart.
 - Never send user email bodies to remote MCP hosts, LLM providers or logs **except through the user's intended, explicitly authorized tool invocation**. Tool return content can be passed by clients to models; policies should default to narrower exposure for agent principals.
@@ -310,7 +322,7 @@ A filtered-out message cannot be inferred from search hit counts, thread placeho
 
 ## 10. Agent skill (future deliverable)
 
-The MCP implementation must ship with a documented, versioned agent skill at a planned location such as `skills/corvi-mcp/SKILL.md`, with examples for configuring the MCP endpoint, discovering authorized identities, reading/searching safely, interpreting hidden/redacted results, **fulfilling MRTR approvals**, **subscribing to visible-mail resource changes**, **polling and cancelling Tasks**, generating and retrying idempotency keys, and avoiding prompt injection from mail content.
+The MCP implementation must ship with a documented, versioned agent skill at a planned location such as `skills/corvi-mcp/SKILL.md`, with examples for configuring the MCP endpoint, **discovering and switching between multiple authorized mailboxes/identities using one token**, reading/searching safely, interpreting hidden/redacted results, **fulfilling MRTR approvals**, **subscribing to visible-mail resource changes for multiple identities**, **polling and cancelling Tasks**, generating and retrying idempotency keys, and avoiding prompt injection from mail content.
 
 **Do not publish a skill describing tools as implemented until the server exists and fixtures pass.** The skill must be treated as guidance, not a substitute for any server-side authorization.
 

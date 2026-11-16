@@ -1,0 +1,2426 @@
+{
+  "schemaVersion": "0.1.0",
+  "targetMcpProtocol": "2026-07-28",
+  "status": "proposed-not-implemented",
+  "description": "Tool definitions for Corvi's mail-facing MCP server. Not a complete tools/list JSON-RPC response.",
+  "tools": [
+    {
+      "name": "mail_list_identities",
+      "description": "Discover only authorized identities and granted operations. Required permission: mail:identities:list. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/identityView"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:identities:list"
+      }
+    },
+    {
+      "name": "mail_list",
+      "description": "List policy-visible mail only, sorted newest first. No upstream counts. Required permission: mail:messages:list. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 25
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/messageSummary"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:messages:list"
+      }
+    },
+    {
+      "name": "mail_search",
+      "description": "Case-insensitive literal query over visible subject and text. Hidden mail is never returned. Required permission: mail:messages:search. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 25
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "query"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/messageSummary"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:messages:search"
+      }
+    },
+    {
+      "name": "mail_get",
+      "description": "Get a sanitized mail projection; never return raw MIME or hidden mail. Required permission: mail:messages:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "messageId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 998
+          },
+          "from": {
+            "$ref": "#/$defs/mailAddress"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            }
+          },
+          "replyTo": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            }
+          },
+          "textBody": {
+            "type": "string",
+            "maxLength": 2000000
+          },
+          "htmlBody": {
+            "type": "string",
+            "maxLength": 2000000
+          },
+          "isRead": {
+            "type": "boolean"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/attachmentDescriptor"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "identityId",
+          "receivedAt"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:messages:read"
+      }
+    },
+    {
+      "name": "mail_get_attachment",
+      "description": "Get approved attachment bytes as base64 with a 2 MiB decoded size cap. Required permission: mail:attachments:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attachmentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "messageId",
+          "attachmentId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "fileName": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "contentType": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2097152
+          },
+          "dataBase64": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "description": "Base64 of permitted content; max decoded size 2 MiB"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "fileName",
+          "contentType",
+          "sizeBytes",
+          "dataBase64"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:attachments:read"
+      }
+    },
+    {
+      "name": "mail_send",
+      "description": "Send text-only mail from an authorized identity. Require explicit user approval unless unattended automation is permitted. Required permission: mail:messages:send. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            },
+            "maxItems": 100
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailAddress"
+            },
+            "maxItems": 100
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 998
+          },
+          "textBody": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "to",
+          "subject",
+          "textBody",
+          "idempotencyKey"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "submitted",
+              "failed",
+              "unknown"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idempotencyDurable": {
+            "type": "boolean"
+          },
+          "failureCode": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "identityId",
+          "status",
+          "createdAt",
+          "idempotencyDurable"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:messages:send"
+      }
+    },
+    {
+      "name": "mail_get_send_status",
+      "description": "Get the authorized status of one outgoing submission. Required permission: mail:submissions:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "submissionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "submissionId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "submitted",
+              "failed",
+              "unknown"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idempotencyDurable": {
+            "type": "boolean"
+          },
+          "failureCode": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "identityId",
+          "status",
+          "createdAt",
+          "idempotencyDurable"
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          },
+          "identityView": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "address": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "displayName": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "mail:identities:list",
+                    "mail:messages:list",
+                    "mail:messages:search",
+                    "mail:messages:read",
+                    "mail:attachments:read",
+                    "mail:messages:send",
+                    "mail:submissions:read"
+                  ]
+                },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "address",
+              "permissions"
+            ]
+          },
+          "attachmentDescriptor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fileName": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "contentType": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "fileName",
+              "contentType",
+              "sizeBytes"
+            ]
+          },
+          "messageSummary": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "snippet": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "isRead": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "submission": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "submitted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "idempotencyDurable": {
+                "type": "boolean"
+              },
+              "failureCode": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "status",
+              "createdAt",
+              "idempotencyDurable"
+            ]
+          },
+          "mailMessage": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "identityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "receivedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "subject": {
+                "type": "string",
+                "maxLength": 998
+              },
+              "from": {
+                "$ref": "#/$defs/mailAddress"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "cc": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "replyTo": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mailAddress"
+                }
+              },
+              "textBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "htmlBody": {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              "isRead": {
+                "type": "boolean"
+              },
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/attachmentDescriptor"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "identityId",
+              "receivedAt"
+            ]
+          },
+          "messagePage": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/messageSummary"
+                }
+              },
+              "nextCursor": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "items"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "corvi.dev/requiredPermission": "mail:submissions:read"
+      }
+    }
+  ]
+}

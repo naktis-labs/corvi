@@ -25,5 +25,9 @@
       "username": "alerts@example.test",
       "secret": "REDACTED-EXAMPLE-PROVIDER-APP-PASSWORD"
     }
+  },
+  "sender": {
+    "fromAddress": "alerts@example.test",
+    "envelopeFrom": "alerts@example.test"
   }
 }

@@ -9,7 +9,7 @@
 - **Machine-readable MCP resource schemas:** [`api/mcp-resources.json`](../../api/mcp-resources.json)
 - **REST peer contract:** [`api/openapi.yaml`](../../api/openapi.yaml)
 
-This specification describes the **personal-mail data-plane MCP server**, not the Kubernetes/operator/provider-administration API. The MCP endpoint cannot create domains, aliases, physical mailboxes or provider credentials. It uses the same public mail tools whether the selected upstream account uses IMAP/SMTP, native JMAP or a permitted IMAP/SMTP bridge (see [ADR-0007](../adr/0007-native-jmap-transport.md)). Such functionality belongs to a separately authenticated control-plane interface.
+This specification describes the **personal-mail data-plane MCP server**, not the Kubernetes/operator/provider-administration API. The MCP endpoint cannot create domains, aliases, physical mailboxes, provider credentials **or initiate upstream provider OAuth onboarding**. Account-connection consent and token refresh management belong to a separately permissioned admin/onboarding surface (see [ADR-0008](../adr/0008-interactive-upstream-oauth.md)). It uses the same public mail tools whether the selected upstream account uses IMAP/SMTP, native JMAP or a permitted IMAP/SMTP bridge (see [ADR-0007](../adr/0007-native-jmap-transport.md)). Such functionality belongs to a separately authenticated control-plane interface.
 
 ## 1. Protocol, discovery and transport
 
@@ -70,7 +70,7 @@ These placeholders do not describe a deployed endpoint or credentials.
 
 Reject mismatched `Host`, unexpected browser `Origin`, unsupported media types, oversized requests, invalid protocol/version headers and unauthenticated calls before invoking a mail operation. Restrict allowed hosts/origins in configuration, particularly when accessed through a reverse proxy, to protect against DNS rebinding and cross-site abuse. Protect network-facing endpoints with TLS or a trusted enforcing TLS terminator.
 
-Remote MCP authentication follows MCP OAuth protected-resource guidance. Publish protected resource metadata, identify permitted authorization servers, and validate issuer, **audience/resource binding**, signature (or introspection), expiration, and Corvi-specific identity/action grants. Access tokens must be issued for Corvi, not simply accepted because another service trusts the same OIDC provider. Support issuer-approved scopes and credentials only where configured. Client-declared software identity from `_meta` never substitutes for these checks.
+Remote MCP authentication follows MCP OAuth protected-resource guidance. Publish protected resource metadata, identify permitted authorization servers, and validate issuer, **audience/resource binding**, signature (or introspection), expiration, and Corvi-specific identity/action grants. Access tokens must be issued for Corvi, not simply accepted because another service trusts the same OIDC provider. Mail-provider OAuth tokens (Fastmail, Gmail, Microsoft, etc.) authenticate **Corvi's backend against the upstream**, not MCP clients against Corvi. Support issuer-approved scopes and credentials only where configured. Client-declared software identity from `_meta` never substitutes for these checks.
 
 ### One client and token, multiple mailboxes/identities
 

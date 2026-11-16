@@ -342,6 +342,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 ## 12. Implementation sequence
 
 1. **Foundations:** Repository structure, provider-neutral config model, policy engine, built-in IMAP/SMTP transport, single-process REST/MCP/SMTP listeners.
+   - Specify REST and MCP public contracts and ship a maintained **agent-facing MCP skill** (`SKILL.md`, examples and usage/safety guidance) once the MCP tools are implemented; test the skill against the actual server rather than documenting speculative tool names.
 2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification.
 3. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
 4. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.

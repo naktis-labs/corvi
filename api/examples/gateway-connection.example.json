@@ -20,7 +20,11 @@
       },
       "actions": [
         "mail:messages:send"
-      ]
+      ],
+      "sender": {
+        "fromAddress": "noreply@example.test",
+        "envelopeFrom": "noreply@example.test"
+      }
     }
   ],
   "services": {

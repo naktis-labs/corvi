@@ -1,0 +1,149 @@
+# DESIGN EXAMPLE ONLY: not a deployable operator or completed Helm chart.
+# bjw-s app-template v5.3.0, dedicated operator release in corvi-system.
+# CRD resource plural names, operator image and configuration are provisional.
+# See docs/adr/0011-hardened-helm-deployment.md.
+defaultPodOptions:
+  automountServiceAccountToken: false  # applies to every non-operator Pod
+  enableServiceLinks: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+serviceAccount:
+  operator:
+    forceRename: corvi-operator
+    # This SA has namespaced permissions below. Explicit opt-in only for the
+    # operator Pod, not gateway, OAuth, plugins, bridges or Jobs.
+    automountServiceAccountToken: true
+    staticToken: false
+
+controllers:
+  operator:
+    type: deployment
+    replicas: 1
+    serviceAccount:
+      identifier: operator
+    pod:
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+    defaultContainerOptionsStrategy: merge
+    defaultContainerOptions:
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+        procMount: Default
+    containers:
+      operator:
+        image:
+          repository: ghcr.io/naktis-labs/corvi-operator
+          digest: sha256:REPLACE_WITH_VERIFIED_IMAGE_DIGEST
+          pullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 64Mi
+          limits:
+            memory: 256Mi
+            ephemeral-storage: 256Mi
+    # This file uses the chart's opt-in automount feature. A future
+    # short-lived, dedicated projected API token is preferable if supported
+    # by the controller's Kubernetes client.
+
+rbac:
+  roles:
+    operator:
+      type: Role
+      rules:
+        - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
+          # Illustrative plural kinds; finalize when CRDs are generated.
+          resources:
+            - mailproviders
+            - maildomains
+            - maildomainpolicies
+            - mailboxes
+            - mailaliases
+            - mailforwardings
+            - mailrewrites
+            - mailidentities
+            - mailpolicies
+            - mailfilterpolicies
+            - mailcredentials
+          verbs: [get, list, watch]
+        - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
+          resources:
+            - mailproviders/status
+            - maildomains/status
+            - mailboxes/status
+            - mailaliases/status
+            - mailidentities/status
+            - mailfilterpolicies/status
+          verbs: [get, patch, update]
+        - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
+          resources:
+            - mailproviders/finalizers
+            - maildomains/finalizers
+            - mailboxes/finalizers
+          verbs: [update]
+        - apiGroups: [apps]
+          resources: [deployments]
+          verbs: [get, list, watch, create, update, patch, delete]
+        - apiGroups: [""]
+          resources: [services, configmaps, serviceaccounts]
+          verbs: [get, list, watch, create, update, patch, delete]
+        - apiGroups: [batch]
+          resources: [jobs]
+          verbs: [get, list, watch, create, update, patch, delete]
+        - apiGroups: [coordination.k8s.io]
+          resources: [leases]
+          # Lease writes are needed only when operator leader election
+          # is enabled. Scope permissions to the operator's namespace.
+          verbs: [get, create, update, patch]
+        # NO secrets/list, arbitrary secrets/get, roles/rolebindings,
+        # cluster-scoped RBAC, pods/exec, serviceaccounts/token,
+        # cluster-admin, impersonate, bind or escalate privileges.
+  bindings:
+    operator:
+      type: RoleBinding
+      roleRef:
+        identifier: operator
+        kind: Role
+      subjects:
+        - kind: ServiceAccount
+          name: corvi-operator
+          namespace: corvi-system
+
+persistence:
+  tmp:
+    type: emptyDir
+    medium: Memory
+    sizeLimit: 32Mi
+    globalMounts:
+      - path: /tmp
+
+# Runtime needs a Kubernetes API egress exception and DNS; require
+# default-deny NetworkPolicies, not an unrestricted 0.0.0.0/0 or ::/0.
+# CRDs are installed separately with elevated GitOps/installer authority.
+# IMPORTANT: create/patch Deployments is powerful even with narrow RBAC:
+# an admission policy MUST constrain generated Pod specs and allowed SAs.
+# The operator owns no SQL database, no provider secrets by default, and
+# must reject unsafe plugin or bridge images before creating Pods.

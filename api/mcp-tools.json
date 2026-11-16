@@ -1695,7 +1695,7 @@
     },
     {
       "name": "mail_send",
-      "description": "Send text-only mail from an authorized identity. Require explicit user approval unless unattended automation is permitted. Required permission: mail:messages:send. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
+      "description": "Send text-only mail from an authorized identity, via the configured upstream SMTP or JMAP submission protocol. Require explicit user approval unless unattended automation is permitted. Required permission: mail:messages:send. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2103,7 +2103,7 @@
     },
     {
       "name": "mail_get_send_status",
-      "description": "Get the authorized status of one outgoing submission. Required permission: mail:submissions:read. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
+      "description": "Get the authorized status of one outgoing submission (SMTP or JMAP upstream). Required permission: mail:submissions:read. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2548,5 +2548,24 @@
     "isolation": "message IDs, cursors, attachments, send receipts, MRTR approval state, Task handles and subscription URIs must be bound to the selected identity",
     "subscriptions": "one subscriptions/listen may authorize multiple independent visible-mail resource URIs from the same token"
   },
-  "resourceCatalog": "api/mcp-resources.json"
+  "resourceCatalog": "api/mcp-resources.json",
+  "upstreamTransportSupport": {
+    "design": "Native in-process JMAP, IMAP and SMTP adapters. These are upstream mailbox transports, not new public MCP methods.",
+    "readProtocols": [
+      "imap",
+      "jmap"
+    ],
+    "submissionProtocols": [
+      "smtp",
+      "jmap",
+      "disabled"
+    ],
+    "independentReadAndSubmission": true,
+    "noImplicitProtocolFallback": true,
+    "sameIdentityGrantsAndDisclosurePolicies": true,
+    "jmapIdentifiersPrivate": true,
+    "jmapPushFilteredBeforeMcpNotification": true,
+    "specification": "docs/adr/0007-native-jmap-transport.md",
+    "schema": "api/mail-transport.schema.json"
+  }
 }

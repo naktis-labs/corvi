@@ -305,7 +305,7 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:identities:list"
+        "corvi.naktis.eu/requiredPermission": "mail:identities:list"
       }
     },
     {
@@ -633,7 +633,7 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:list"
+        "corvi.naktis.eu/requiredPermission": "mail:messages:list"
       }
     },
     {
@@ -967,8 +967,8 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:search",
-        "corvi.dev/taskEligible": true
+        "corvi.naktis.eu/requiredPermission": "mail:messages:search",
+        "corvi.naktis.eu/taskEligible": true
       }
     },
     {
@@ -1344,7 +1344,7 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:read"
+        "corvi.naktis.eu/requiredPermission": "mail:messages:read"
       }
     },
     {
@@ -1690,7 +1690,7 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:attachments:read"
+        "corvi.naktis.eu/requiredPermission": "mail:attachments:read"
       }
     },
     {
@@ -2096,9 +2096,9 @@
         "openWorldHint": true
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:send",
-        "corvi.dev/confirmation": "MRTR elicitation/create required unless explicitly authorized unattended send policy",
-        "corvi.dev/mrtrOnUnavailable": "CONFIRMATION_REQUIRED"
+        "corvi.naktis.eu/requiredPermission": "mail:messages:send",
+        "corvi.naktis.eu/confirmation": "MRTR elicitation/create required unless explicitly authorized unattended send policy",
+        "corvi.naktis.eu/mrtrOnUnavailable": "CONFIRMATION_REQUIRED"
       }
     },
     {
@@ -2449,7 +2449,7 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:submissions:read"
+        "corvi.naktis.eu/requiredPermission": "mail:submissions:read"
       }
     }
   ],

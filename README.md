@@ -92,6 +92,18 @@ crates/
 $ cargo test --workspace
 ```
 
+The same checks CI runs can be run locally:
+
+```console
+$ cargo fmt --all -- --check
+$ cargo clippy --workspace --all-targets -- -D warnings
+$ cargo test --workspace --all-targets
+$ python3 scripts/check_crate_boundaries.py
+$ python3 scripts/check_doc_links.py
+```
+
+`scripts/check_crate_boundaries.py` enforces the data-plane dependency rule: no Kubernetes, operator, provider-management, database or HTTP-client dependency may appear in a data-plane crate, and the implemented crates' dependency sets are pinned. `scripts/check_doc_links.py` verifies that every internal documentation link resolves.
+
 > **Project status:** Architecture and early implementation. The ADRs describe intended behavior; the crates that exist implement a stated subset of it, and the rest is not yet written.
 
 The license, stable API contracts and development workflow will be established as the implementation progresses.

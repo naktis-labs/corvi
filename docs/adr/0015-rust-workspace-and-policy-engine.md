@@ -105,6 +105,28 @@ The string-level sanitizer is the weakest part of this implementation. It is bou
 5. `mail-core` exposes no transport, network or Kubernetes type.
 6. Internal documentation links resolve (`scripts/check_doc_links.py`).
 
+## The licence is deliberately unset
+
+The workspace sets `publish = false` and names no licence. ADR-0001 section 14 lists the licence as an open question, and it is one that has real consequences: Corvi depends on nothing, so a permissive licence costs nothing, but picking one is m00n's decision and not a detail to be settled by an implementation pass.
+
+There is deliberately **no `LICENSE` file** in the repository, and the crates carry `publish = false`. Both should stay until the licence is chosen.
+
+## CI
+
+The repository has a GitHub Actions workflow that runs formatting, clippy under `-D warnings`, the test suite, a locked build, the crate boundary check and the documentation link check.
+
+The workflow file is **not yet committed**, because the `hati-moonchaser` GitHub App does not hold the `workflows` permission, and GitHub refuses to let a GitHub App create or update `.github/workflows/*`. This is a deliberate grant boundary from the App setup, not an oversight: m00n grants `workflows` only when he wants Hati pushing Actions changes.
+
+Until that permission is granted, the same checks run locally with:
+
+```console
+$ cargo fmt --all -- --check
+$ cargo clippy --workspace --all-targets -- -D warnings
+$ cargo test --workspace --all-targets
+$ python3 scripts/check_crate_boundaries.py
+$ python3 scripts/check_doc_links.py
+```
+
 ## References
 
 - [ADR-0001: Corvi system architecture](0001-corvi-system-architecture.md)

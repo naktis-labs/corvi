@@ -419,8 +419,8 @@ components:
       properties:
         type:
           type: "string"
-          const: "about:blank"
-          description: "May instead be an error-specific URI."
+          format: "uri-reference"
+          description: "Problem type URI, default about:blank if no specific type is defined."
         title:
           type: "string"
         status:

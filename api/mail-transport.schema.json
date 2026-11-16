@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/mail-transport/v1alpha1",
+  "title": "Corvi provider-neutral upstream mail transport descriptor",
+  "description": "Proposed ADR-0007 transport schema, separating read protocol, submission protocol and IMAP/SMTP bridge topology. This does not authorize upstream credentials, arbitrary URLs, plugins or runtime images. Validate JMAP account capabilities and URL trust at runtime. Not implemented.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "read",
+    "submission"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.eu/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "MailboxTransport"
+    },
+    "read": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/readImap"
+        },
+        {
+          "$ref": "#/$defs/readJmap"
+        }
+      ]
+    },
+    "submission": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/submitSmtp"
+        },
+        {
+          "$ref": "#/$defs/submitJmap"
+        },
+        {
+          "$ref": "#/$defs/submitDisabled"
+        }
+      ]
+    },
+    "allowedFallbacks": {
+      "type": "array",
+      "maxItems": 0,
+      "description": "No implicit cross-protocol fallback. Future explicit fallback support requires a separate capability/security contract."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "submission": {
+            "properties": {
+              "protocol": {
+                "const": "jmap"
+              },
+              "sessionSource": {
+                "const": "reuseRead"
+              }
+            },
+            "required": [
+              "protocol",
+              "sessionSource"
+            ]
+          }
+        },
+        "required": [
+          "submission"
+        ]
+      },
+      "then": {
+        "properties": {
+          "read": {
+            "properties": {
+              "protocol": {
+                "const": "jmap"
+              }
+            },
+            "required": [
+              "protocol"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "secretRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Trusted configured secret reference resolved by Corvi; never a JMAP token literal."
+    },
+    "sessionUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$",
+      "format": "uri",
+      "description": "Trusted HTTPS JMAP Session URL; URLs advertised by the Session must also be validated against egress/origin policy."
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "implicitTls",
+            "startTls"
+          ]
+        },
+        "peerVerification": {
+          "type": "string",
+          "enum": [
+            "systemTrust",
+            "trustedCA",
+            "pinnedCertificate"
+          ]
+        },
+        "peerRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Trusted local CA or certificate fingerprint when required."
+        }
+      },
+      "required": [
+        "mode",
+        "peerVerification"
+      ],
+      "description": "TLS verification is mandatory; no plain/skipVerify mode."
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "tls": {
+          "$ref": "#/$defs/tls"
+        }
+      },
+      "required": [
+        "host",
+        "port",
+        "tls"
+      ]
+    },
+    "accountSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "primaryForCapability",
+            "explicit"
+          ]
+        },
+        "capability": {
+          "type": "string",
+          "enum": [
+            "urn:ietf:params:jmap:mail",
+            "urn:ietf:params:jmap:submission"
+          ]
+        },
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Upstream JMAP account ID, not Corvi MailIdentity ID."
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "primaryForCapability"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "capability"
+            ],
+            "not": {
+              "required": [
+                "accountId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "explicit"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "accountId"
+            ]
+          }
+        }
+      ]
+    },
+    "jmapIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "selection": {
+          "type": "string",
+          "enum": [
+            "byExactEmail",
+            "explicit"
+          ]
+        },
+        "upstreamIdentityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Upstream JMAP Identity ID; validated against Identity/get and Corvi's allowed sender."
+        }
+      },
+      "required": [
+        "selection"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "explicit"
+              }
+            },
+            "required": [
+              "selection"
+            ]
+          },
+          "then": {
+            "required": [
+              "upstreamIdentityId"
+            ]
+          }
+        }
+      ]
+    },
+    "readImap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "imap"
+        },
+        "topology": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "existingBridge",
+            "managedBridge"
+          ]
+        },
+        "endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "credentialRef": {
+          "$ref": "#/$defs/secretRef"
+        }
+      },
+      "required": [
+        "protocol",
+        "topology",
+        "endpoint",
+        "credentialRef"
+      ]
+    },
+    "readJmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "jmap"
+        },
+        "sessionUrl": {
+          "$ref": "#/$defs/sessionUrl"
+        },
+        "account": {
+          "$ref": "#/$defs/accountSelector"
+        },
+        "credentialRef": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "authentication": {
+          "type": "string",
+          "enum": [
+            "oauth2",
+            "apiToken",
+            "bearer"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "sessionUrl",
+        "account",
+        "credentialRef",
+        "authentication"
+      ],
+      "description": "Native in-process JMAP over HTTPS, no bridge. Account is validated against authenticated Session accountCapabilities."
+    },
+    "submitSmtp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "smtp"
+        },
+        "topology": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "existingBridge",
+            "managedBridge"
+          ]
+        },
+        "endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "credentialRef": {
+          "$ref": "#/$defs/secretRef"
+        }
+      },
+      "required": [
+        "protocol",
+        "topology",
+        "endpoint",
+        "credentialRef"
+      ]
+    },
+    "submitJmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "jmap"
+        },
+        "sessionSource": {
+          "type": "string",
+          "enum": [
+            "reuseRead",
+            "separate"
+          ]
+        },
+        "sessionUrl": {
+          "$ref": "#/$defs/sessionUrl"
+        },
+        "credentialRef": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "authentication": {
+          "type": "string",
+          "enum": [
+            "oauth2",
+            "apiToken",
+            "bearer"
+          ]
+        },
+        "account": {
+          "$ref": "#/$defs/accountSelector"
+        },
+        "identitySelection": {
+          "$ref": "#/$defs/jmapIdentity"
+        }
+      },
+      "required": [
+        "protocol",
+        "sessionSource",
+        "account",
+        "identitySelection"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sessionSource": {
+                "const": "separate"
+              }
+            },
+            "required": [
+              "sessionSource"
+            ]
+          },
+          "then": {
+            "required": [
+              "sessionUrl",
+              "credentialRef",
+              "authentication"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sessionSource": {
+                "const": "reuseRead"
+              }
+            },
+            "required": [
+              "sessionSource"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "sessionUrl"
+                  ]
+                },
+                {
+                  "required": [
+                    "credentialRef"
+                  ]
+                },
+                {
+                  "required": [
+                    "authentication"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "submitDisabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "disabled"
+        }
+      },
+      "required": [
+        "protocol"
+      ]
+    }
+  }
+}

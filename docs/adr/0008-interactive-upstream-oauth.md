@@ -10,9 +10,9 @@
 
 **Corvi SHALL support interactive OAuth 2.0 authorization against mail providers that offer it** as a first-class way to connect upstream accounts. A user or authorized administrator chooses a provider/account, explicitly consents at the **provider's own authorization server**, and Corvi exchanges the resulting authorization code and stores a protected upstream connection. The user must not have to paste account passwords or manually create provider API tokens when a supported provider OAuth integration is available.
 
-Interactive **upstream provider OAuth** is a **separate trust domain** from client→Corvi OAuth/OIDC, Corvi service tokens, SMTP AUTH credentials, MCP authorization, and provider-management administrator credentials. A provider's access/refresh token is **never** accepted as a Corvi public API token, sent to an MCP/REST client or agent, copied into tool results, or used as a broad client authorization grant. Provider consent establishes what *Corvi* can access upstream; Corvi's `MailCredential`, `MailIdentity`, `MailPolicy` and `MailFilterPolicy` independently decide what each agent/application may see or do.
+Interactive **upstream provider OAuth** is a **separate trust domain** from client→Corvi OAuth/OIDC, Corvi service tokens, SMTP AUTH credentials, MCP authorization, and provider-management administrator credentials. Corvi's **own OAuth authorization server, client consent and per-identity grants** are specified separately in [ADR-0009](0009-corvi-oauth-and-identity-grants.md). A provider's access/refresh token is **never** accepted as a Corvi public API token, sent to an MCP/REST client or agent, copied into tool results, or used as a broad client authorization grant. Provider consent establishes what *Corvi* can access upstream; Corvi's `MailCredential`, `MailIdentity`, `MailPolicy` and `MailFilterPolicy` independently decide what each agent/application may see or do.
 
-The **gateway's public seven REST operations and seven MCP mail tools do not change**. Upstream connection administration belongs to an authenticated, separately authorized management/onboarding interface. A standalone CLI/UI may expose the same connection workflow locally without requiring Kubernetes or an always-on controller.
+The **gateway's public seven REST operations and seven MCP mail tools do not change**. Client-facing OAuth authorization and the provider-onboarding browser consent endpoint may be hosted in one binary but maintain separate issuer/account bindings, credentials, resource audiences and permissions (ADR-0009). Upstream connection administration belongs to an authenticated, separately authorized management/onboarding interface. A standalone CLI/UI may expose the same connection workflow locally without requiring Kubernetes or an always-on controller.
 
 ## 1. Provider authentication capabilities and fallback
 
@@ -140,6 +140,7 @@ A user allowed to read an already connected mailbox is **not automatically** all
 
 ## References
 
+- [ADR-0009: Corvi client OAuth authorization and grants](0009-corvi-oauth-and-identity-grants.md)
 - [RFC 9700: OAuth 2.0 Security Best Current Practice](https://www.rfc-editor.org/rfc/rfc9700)
 - [RFC 7636: Proof Key for Code Exchange](https://www.rfc-editor.org/rfc/rfc7636)
 - [RFC 8628: Device Authorization Grant](https://www.rfc-editor.org/rfc/rfc8628)

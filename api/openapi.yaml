@@ -20,7 +20,7 @@ paths:
         - "Identities"
       operationId: "listIdentities"
       summary: "List identities authorized for this caller"
-      description: "Returns only identities visible to the authenticated principal; scope is rechecked on every request."
+      description: "Returns all identities explicitly granted to this principal, potentially across multiple mailboxes and providers, each with its own effective permissions. One bearer token may authorize many identities; scope is rechecked on every request."
       x-corvi-permission: "mail:identities:list"
       responses:
         "200":
@@ -300,7 +300,7 @@ components:
     bearerAuth:
       type: "http"
       scheme: "bearer"
-      description: "Corvi-authorized bearer credential or validated OAuth2 access token, scoped to identities and operations. Authorization is enforced server-side; never use provider credentials."
+      description: "Corvi-authorized bearer credential or validated OAuth2 access token. One token can grant multiple identities backed by different mailboxes or providers, with independent action grants; passing identityId selects exactly one authorized identity per operation. Scopes must never be unioned across identities. Never use upstream provider credentials."
   parameters:
     identityId:
       name: "identityId"
@@ -310,7 +310,7 @@ components:
         type: "string"
         minLength: 1
         maxLength: 256
-      description: "Caller-authorized opaque mail identity ID."
+      description: "Required selection of one identity from this credential\u0027s individually authorized identities. A token may hold grants for many mailboxes; this field does not confer access by itself."
     messageId:
       name: "messageId"
       in: "path"

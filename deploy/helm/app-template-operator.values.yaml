@@ -108,7 +108,7 @@ rbac:
           resources: [deployments]
           verbs: [get, list, watch, create, update, patch, delete]
         - apiGroups: [""]
-          resources: [services, configmaps, serviceaccounts]
+          resources: [services, configmaps]
           verbs: [get, list, watch, create, update, patch, delete]
         - apiGroups: [batch]
           resources: [jobs]
@@ -118,6 +118,8 @@ rbac:
           # Lease writes are needed only when operator leader election
           # is enabled. Scope permissions to the operator's namespace.
           verbs: [get, create, update, patch]
+        # Plugin ServiceAccounts must be pre-provisioned by privileged
+        # chart/GitOps bootstrap, not created or changed by the operator.
         # NO secrets/list, arbitrary secrets/get, roles/rolebindings,
         # cluster-scoped RBAC, pods/exec, serviceaccounts/token,
         # cluster-admin, impersonate, bind or escalate privileges.

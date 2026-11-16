@@ -8,22 +8,26 @@
 
 ## Decision
 
-Corvi shall support **SQLite (embedded standalone)** and **PostgreSQL (external/multi-replica)** as alternative relational state backends, with separate abstractions for **secret custody**, **configuration snapshots** and **optional large-object storage**. The provider's IMAP/JMAP mailbox remains the **source of truth for incoming mail**, not Corvi's database.
+**Kubernetes-mode Corvi control plane SHALL use the Kubernetes API as its only authoritative persistence layer** for declarative management state: CRD `spec` and `status`, Kubernetes `Lease` objects for controller leader election, and references to Kubernetes Secrets/external secret providers. **No SQL database is required or owned by the Kubernetes operator/control plane.**
+
+Separately, Corvi shall support **SQLite (embedded standalone)** and **PostgreSQL (external/multi-replica)** as alternative relational **data-plane and OAuth authorization-service** state backends, with separate abstractions for **secret custody**, **configuration snapshots** and **optional large-object storage**. The provider's IMAP/JMAP mailbox remains the **source of truth for incoming mail**, not Corvi's database.
 
 **No external database is required for minimal standalone**, configured with a local file, direct IMAP/SMTP or native JMAP access, direct submission and an externally managed/verified client credential. Once the **integrated Corvi OAuth authorization server** is enabled, a durable token/grant/revocation store becomes mandatory: **SQLite on a protected persistent volume is sufficient for one instance**. A fully durable queue, crash-safe idempotency, resumable tasks, and persistent synchronization/indexing also require an enabled durable store.
 
-For **HA/multiple active Corvi instances**, use **PostgreSQL as the shared authoritative transactional database**. SQLite remains a local, single-writer database, not a distributed lock coordinator; never share one SQLite WAL database over a generic RWX/NFS PVC among multiple Corvi Pods.
+For **HA/multiple active Corvi data-plane or integrated OAuth-issuer instances**, use **PostgreSQL as the shared authoritative transactional database for those services, not for the operator**. SQLite remains a local, single-writer database, not a distributed lock coordinator; never share one SQLite WAL database over a generic RWX/NFS PVC among multiple Corvi Pods.
 
-Storage is divided by security and ownership boundaries: data-plane state is owned by the data plane, provider admin state by the optional control plane, and credentials are never exposed to mail-facing clients or provider plugins solely because they can read database records.
+Storage is divided by security and ownership boundaries: **operator/provider-management desired state and reconciliation status belong in Kubernetes**, data-plane operational state belongs to the data plane, OAuth grant and token-family records belong to the authorization service, and credentials are never exposed to mail-facing clients or provider plugins solely because they can read database records. Even if the OAuth issuer shares a binary/Pod with the operator, its high-churn transactional token store is **not operator reconciliation state**.
 
 ## 1. Storage domains
 
 | Domain | Examples | Authority and recommended storage |
 | --- | --- | --- |
-| **Desired configuration** | MailProvider/Identity/Policy resources, deployment settings, secret *references* | GitOps/CRDs or YAML; input to validated immutable snapshots; no raw secret values |
+| **Kubernetes provider-management state** | MailProvider, MailDomain, Mailbox, MailAlias, MailIdentity, policies, approved plugin images, provider-connection references | **Kubernetes CRD `spec` is the desired-state source of truth**, reconciled by the operator; no shadow SQL copy |
+| **Kubernetes reconciliation state** | `status.conditions`, `observedGeneration`, external provider resource IDs, last successful generation, retryable diagnostics, operator leader election | **CRD `status` and Kubernetes `Lease` objects**; sanitize status and keep it bounded; no database |
+| **Standalone management desired state** | Provider definitions, provisioning directives, policies, secret references | Versioned YAML/files (optional GitOps); local state file only when needed for non-Kubernetes management, not a required SQL dependency |
 | **Active configuration** | Last-known-good, validated generation; feature flags; permission references | Atomic snapshot file or protected local state plus in-memory active revision; no unrestricted provider secrets |
 | **OAuth/identity state** | Clients, consented per-identity grants, issuer/subject mapping, auth codes, token hashes, refresh families, revocations, session metadata | Transactional SQLite or PostgreSQL; required for integrated Corvi AS |
-| **Provider connection state** | Upstream account binding, capability/scopes, token expiry, revocation/reauthorization status, refresh leases | Relational metadata plus encrypted secret store; never ordinary config/CRD status |
+| **Provider connection state** | Declarative provider/account binding, non-secret capability/health status, protected token material and refresh coordination | **Kubernetes:** CRD `spec` reference and sanitized `status`, with secret material in Secrets/external vault; **data-plane/token broker:** relational refresh/rotation state when HA transactional guarantees are needed. **Standalone:** file/local metadata or SQLite when the OAuth runtime needs persistence |
 | **Message sync state** | IMAP UIDVALIDITY/UID, JMAP account state tokens, checkpoint generations, worker leases, opaque ID mappings | Durable DB **when persistent sync or stable mapping is enabled**; otherwise transient bounded reconciliation |
 | **Outbound state** | Idempotency keys, canonical payload digest, submission record, durable queue item, retry attempts, outcome and reconciliation hints | Durable DB and optional encrypted payload blob; owned by data plane |
 | **MCP Task and event state** | Task ownership/state/result reference/cancellation, optional event replay/outbox | Durable DB for enabled Tasks; subscriptions alone are best-effort and need no durable history |
@@ -35,6 +39,8 @@ Secret values do **not** belong in GitOps, Kubernetes CRD `spec`/`status`, norma
 
 ## 2. Backend and deployment modes
 
+**Two independent storage decisions apply:** (1) management/control-plane storage and (2) mail data-plane/OAuth-issuer transactional storage. In Kubernetes mode, the operator always uses Kubernetes as its authoritative desired/reconciled state. The table below applies **only to data-plane and OAuth transactional state**, not operator storage.
+
 | Mode | State | Guarantees |
 | --- | --- | --- |
 | `ephemeral` | In memory / optional atomic configuration file | Minimal gateway; **no integrated OAuth issuer**, durable queue, guaranteed restart-safe idempotency or durable Tasks |
@@ -43,16 +49,20 @@ Secret values do **not** belong in GitOps, Kubernetes CRD `spec`/`status`, norma
 
 SQLite defaults: WAL mode, busy timeout and bounded connections, transactional migrations, one-process writer ownership, configured `synchronous` policy according to durability requirements, integrity checks and checkpointing. Protect file, WAL and SHM files with filesystem permissions; don't copy just the `.db` file while WAL writers are active. Local filesystem or single-instance persistent PVC only. After a crash, restore/reconcile queued sends and refresh families before resuming operations.
 
-PostgreSQL defaults: dedicated role/schema/database permissions per **data-plane** and **control-plane** concern (prefer separate databases or schemas when credentials and trust boundaries differ), TLS certificate/peer verification, bounded pools, schema migration coordination, atomic compare-and-swap/transactional updates, leases/fencing for singleton work, and explicit degraded-mode behavior when DB connectivity is lost. Do not assume PostgreSQL row-level security replaces Corvi per-identity policy enforcement.
+PostgreSQL defaults: dedicated role/schema/database permissions per **data-plane** and **OAuth authorization-service** concern (prefer separate databases or schemas when credentials and trust boundaries differ), TLS certificate/peer verification, bounded pools, schema migration coordination, atomic compare-and-swap/transactional updates, leases/fencing for singleton work, and explicit degraded-mode behavior when DB connectivity is lost. Do not assume PostgreSQL row-level security replaces Corvi per-identity policy enforcement.
+
+**Kubernetes reconciler storage semantics:** Watch/list CRDs through API-server caches and reconcile using `metadata.generation`/`status.observedGeneration`; update `status` subresources with conflict retries, record non-sensitive external IDs in status where required, use finalizers for cleanup, and use `Lease` for operator leader election when configured. `resourceVersion` provides optimistic write concurrency; do not build a shadow SQL state store or treat the cache as authoritative after a missed watch/relist. The operator may be briefly unavailable while the API server is down, but the gateway continues with its last validated configuration snapshot and existing expiry/freshness limits. Preserve independent credential/transport availability semantics.
 
 **Do not add Redis as a requirement.** An optional cache/pubsub adapter may accelerate multi-replica invalidation/fanout, but PostgreSQL remains authoritative. A cache hit cannot replace token revocation, current policy, OAuth grant, or message disclosure verification.
 
 ## 3. Rust storage interfaces and migrations
 
-Define small domain-focused stores instead of a universal `Database` trait with backend-specific SQL exposed to business logic:
+Define a **Kubernetes management repository/reconciler** consuming typed CRDs and Secrets references (or local file implementations in standalone mode), separate from domain-focused **transactional** stores. Do not introduce a `ProviderAdminSqlStore` as the operator's second source of truth.
+
+For the data plane and OAuth authorization service, define small domain-focused stores instead of a universal `Database` trait with backend-specific SQL exposed to business logic:
 
 - `GrantStore`: OAuth clients/consent/grant revisions, auth-code single-use exchange, opaque access-token lookup, rotating refresh families, revocation and owner review.
-- `ProviderConnectionStore`: upstream account metadata, scopes, credential references, refresh rotation ownership and connection state.
+- `ProviderConnectionStore`: **data-plane/token broker's** transactional refresh lifecycle and per-connection metadata, not an independent provider-management SQL registry. Kubernetes control-plane connection configuration and sanitized status are CRD-backed.
 - `MailboxStateStore`: IMAP/JMAP sync cursors, opaque ID lookup, identity-safe checkpoint state and fenced worker ownership.
 - `SubmissionStore`: idempotency and submission state machine, transactional queue/claim/update, retries and cleanup.
 - `TaskStore`: durable task ownership, progress, cancellation and result handles.
@@ -75,7 +85,7 @@ Migration safety: transactional migration when supported, `schema_version` and f
 Proposed implementations:
 
 1. **Standalone:** local encrypted secret vault backed by protected files and an independent wrapping key obtained from operator-supplied file/OS secret/keyring/passphrase mechanism. Never store the decrypting master key in the **same database backup or plain config file** as the encrypted tokens. The exact crypto/KDF profile and secure unlocking UX need implementation-level review.
-2. **Kubernetes:** use approved Kubernetes Secrets via mounted volumes, external secrets providers/KMS, or a dedicated encrypted token-vault service; applications should access only the references needed. Kubernetes Secrets are **not encrypted end-to-end by default merely because they use the Secret API**; require configured at-rest encryption, RBAC and audit policy.
+2. **Kubernetes:** CRDs reference approved Kubernetes Secrets via scoped namespaced references or an external secret provider/KMS. Secrets may hold provider admin tokens and runtime bridge credentials under minimal RBAC; dynamic upstream OAuth refresh tokens may use a dedicated token broker/secret vault when rotation needs atomicity across replicas. Applications should access only the references they need. The **operator does not receive mail-message content or access to data-plane token signing/refresh secrets** merely because it controls CRDs. Kubernetes Secrets are **not encrypted end-to-end by default merely because they use the Secret API**; require configured at-rest encryption, RBAC and audit policy.
 3. **PostgreSQL-encrypted-envelope option:** acceptable only if envelope encryption uses a **separately managed** wrapping key. Do not use database-only password encryption or rely on TLS-at-rest claims to protect from a DB dump.
 
 Bind encrypted secret envelopes with associated data (provider/connection/secret type/version/owner); support key IDs, versioned rewrap, least-privilege access, rollback/recovery, and explicit rotation/revoke. Do not log plaintext tokens, OAuth authorization codes, key material, password reset links or the entire URI if it may contain secrets.
@@ -136,13 +146,17 @@ features:
   persistInboundMail: false
 ```
 
-For Kubernetes HA: set `state.backend: postgres` with a **credential reference**, configure the external/wrapped secret store separately, and use a database reachable by all gateway replicas. Do not mount the same SQLite file into multiple active replicas.
+For Kubernetes mode: set `controlPlane.backend: kubernetes`, reconcile provider-management state entirely via Kubernetes CRDs/status/Leases and approved Secret references. **Only if the data-plane/OAuth issuer needs HA transactional state**, set `state.backend: postgres` with a credential reference and a database reachable by its replicas. An operator-only install requires **no PostgreSQL, SQLite or Redis**. Do not mount the same SQLite file into multiple active replicas.
 
 **Do not copy the literal `secret://` syntax into a production config without the corresponding trusted secret-reference resolver.** Illustrative paths and resource names in this ADR are not published configuration fields.
 
 ## 9. Acceptance tests
 
-1. Minimal standalone gateway with `ephemeral` state and external identity credential requires no DB or external services; integrated Corvi OAuth issuer, durable Tasks or durable queue cannot be enabled without persistent storage.
+1. A Kubernetes operator-only installation reconciles providers and mail resources using only CRDs, bounded status, Kubernetes Secrets/external secret references and Leases. It has no dependency on SQLite, PostgreSQL, Redis or a mail data plane, and survives operator restart/relist without lost desired state.
+2. Kubernetes API `resourceVersion` conflicts, interrupted watches, controller leader changes, finalizer retries and external drift converge without a shadow management SQL database or secret disclosure via status.
+3. Kubernetes API loss pauses management reconciliation but does **not** force an already-running data plane to call Kubernetes for mail operations or invalidate its last-known-good snapshot before the specified freshness deadline.
+4. Secret RBAC, encryption-at-rest configuration, rotation and connection-to-Secret reference integrity are enforced. An operator with access to management CRDs does not automatically receive Corvi OAuth token/signing secrets or stored mail.
+5. Minimal standalone gateway with `ephemeral` state and external identity credential requires no DB or external services; integrated Corvi OAuth issuer, durable Tasks or durable queue cannot be enabled without persistent storage.
 2. `sqlite` mode survives restart with client grants, refresh families, revoked tokens, upstream connection state and idempotent queued submissions intact, including WAL checkpoint/crash tests.
 3. `postgres` mode coordinates multiple replicas' issuer state, refresh rotation, queue claims and JMAP/IMAP sync ownership with no duplicate token refresh or queue ownership.
 4. A DB dump, ordinary config snapshot, CRD dump or S3 object listing does **not** disclose upstream OAuth refresh tokens or provider passwords without separately protected key material.
@@ -156,7 +170,7 @@ For Kubernetes HA: set `state.backend: postgres` with a **credential reference**
 
 ## Consequences
 
-The common storage interface enables a small standalone Corvi with embedded SQLite and a safe migration path to PostgreSQL HA. Secret custody stays separate from relational authorization/operational records. Durable OAuth, queues, synchronization and Tasks become **explicit feature-dependent commitments**, not mandatory background infrastructure for basic mail access.
+**Kubernetes is the authoritative storage engine for provider-management reconciliation, without a second control-plane database.** The separate transactional data-plane/OAuth storage interfaces enable a small standalone Corvi with embedded SQLite and a migration path to PostgreSQL HA. Secret custody stays separate from relational authorization/operational records. Durable OAuth, queues, synchronization and Tasks become **explicit feature-dependent commitments**, not mandatory background infrastructure for basic mail access.
 
 ---
 This ADR records a proposed storage contract, not implemented database migrations or a released storage configuration format.

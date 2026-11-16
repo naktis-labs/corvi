@@ -48,6 +48,15 @@ spec:
   gatewayRef:
     name: primary
 ---
+# This provider has NO gatewayRef: management-only, no mail-serving gateway.
+# It does not need a CorviGateway object or running gateway Pod.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: administration-only
+  namespace: corvi-system
+spec: {}
+---
 apiVersion: corvi.naktis.eu/v1alpha1
 kind: Mailbox
 metadata:
@@ -84,8 +93,30 @@ spec:
   mailboxRef:
     name: service
 
+---
+# An unbound provider can own mailboxes and identities without exposing them.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: unserved-mailbox
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: administration-only
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: unserved
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: unserved-mailbox
+
 # CorviGateway "primary" serves "me" and "noreply" through the resolved
 # graph. A separate CorviGateway is not authorized to expose those identities.
 # Per-client OAuth grants still control which of the two identities it may use.
-# Provider administrative mode can use CorviGateway.spec.suspended: true
-# as a logical parent while running no gateway mail Pods/Service.
+# MailProvider administration-only has no gatewayRef and never exposes
+# unserved-mailbox/unserved to any gateway. Management still works.
+# CorviGateway.spec.suspended: true remains an optional temporary
+# mail-serving pause for already-bound providers, not a requirement.

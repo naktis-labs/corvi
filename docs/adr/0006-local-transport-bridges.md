@@ -40,7 +40,7 @@ annotations:
   eu.naktis.corvi.provider.discovery-protocol: "corvi.provider.v1"
 ```
 
-The annotations convey **that** an adapter requires an ancillary bridge, not its unrestricted execution plan. They comply with OCI's ordinary namespaced string-key/string-value annotation format. The exact annotation namespace remains provisional until the code/schema is published.
+The annotations convey **that** an adapter requires an ancillary bridge, not its unrestricted execution plan. They comply with OCI's ordinary namespaced string-key/string-value annotation format. The canonical Corvi namespace is rooted at `corvi.naktis.eu`, so reverse-DNS OCI annotation keys use the `eu.naktis.corvi.*` prefix. Specific key names and their schemas remain provisional until the implementation contract is published.
 
 Discovery flow:
 

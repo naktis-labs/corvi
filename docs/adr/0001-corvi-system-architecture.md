@@ -139,7 +139,7 @@ A MailIdentity specifies:
 - Permitted From and SMTP envelope-sender identities.
 - The policies and credentials that may act on its behalf.
 
-A **MailCredential** references one or more explicitly permitted identities and a **MailPolicy**. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
+A **MailCredential** references **one or more explicitly permitted identities**, each with its own applicable action grants and policies. This includes identities on **distinct physical mailboxes and upstream providers**, all usable by **one MCP/REST access token** without reconnecting or authenticating separately per mailbox. Requests explicitly select an `identityId`, and Corvi resolves its backing mailbox from trusted configuration; permissions and disclosure policies are never unioned across identities. A credential granting read on identity A and send on identity B does not grant send on A or read on B. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions per identity. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
 
 ### 4.2 Provable alias isolation
 

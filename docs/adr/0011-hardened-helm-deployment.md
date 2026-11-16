@@ -5,6 +5,7 @@
 - **Scope:** Kubernetes packaging for Corvi gateway, OAuth service, provider-management operator, plugin workloads, bridges and maintenance Jobs
 - **Related:** [ADR-0001](0001-corvi-system-architecture.md), [ADR-0004](0004-pluggable-grpc-policy-engines.md), [ADR-0006](0006-local-transport-bridges.md), [ADR-0008](0008-interactive-upstream-oauth.md), [ADR-0009](0009-corvi-oauth-and-identity-grants.md), [ADR-0010](0010-storage-and-durability.md)
 - **Illustrative app-template values:** [gateway](../../deploy/helm/app-template-gateway.values.yaml), [operator](../../deploy/helm/app-template-operator.values.yaml)
+- **Supplemental deployment guide:** [chart usage and validation](../../deploy/helm/app-template/README.md), [default-deny/DNS NetworkPolicy fixture](../../deploy/helm/app-template/networkpolicy.example.yaml)
 
 ## Decision
 

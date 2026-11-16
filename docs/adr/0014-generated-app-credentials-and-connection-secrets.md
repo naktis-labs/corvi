@@ -1,138 +1,140 @@
-# ADR-0014: App-credential Secret publication and resolved connection bundles
+# ADR-0014: Typed app credentials and flat-key connection Secrets
 
-- **Status:** Proposed, not implemented
+- **Status:** Proposed; credential CRDs, issuer integration, Secret publisher and controllers are not implemented
 - **Date:** 2026-11-16
-- **Scope:** Credential-producing Kubernetes resources, custom generated Secret names/annotations, portable protocol-specific connection material
+- **Scope:** App-credential resources, provider-native issuance, custom Secret names/annotations, explicit MCP/REST/SMTP connection shapes
 - **Related:** [ADR-0001](0001-corvi-system-architecture.md), [ADR-0005](0005-public-mail-api.md), [ADR-0008](0008-interactive-upstream-oauth.md), [ADR-0009](0009-corvi-oauth-and-identity-grants.md), [ADR-0010](0010-storage-and-durability.md), [ADR-0011](0011-hardened-helm-deployment.md), [ADR-0013](0013-mail-resource-ownership-graph.md)
-- **Design schema:** [Connection Secret schema](../../api/generated-connection-secret.schema.json)
-- **Examples:** [Credential-to-Secret resources](../../deploy/examples/generated-connection-secrets.example.yaml), [decoded gateway connection](../../api/examples/gateway-connection.example.json), [decoded direct provider connection](../../api/examples/provider-direct-connection.example.json)
+- **Design schema:** [Typed credential and Secret-key contract](../../api/generated-connection-secret.schema.json)
+- **Examples:** [Credential producers](../../deploy/examples/generated-connection-secrets.example.yaml), [decoded gateway Secret keys](../../api/examples/gateway-connection.example.json), [decoded provider-direct Secret keys](../../api/examples/provider-direct-connection.example.json)
 
 ## Decision
 
-**Any Corvi resource that *issues* an app token or application credential SHALL support an operator-controlled Kubernetes Secret output with a user-chosen name and custom annotations.** The output MUST be **directly usable**: it contains protocol endpoints, transport/TLS details, the correct credential and authentication mechanism, and effective capabilities for the specific target and routing mode, instead of only an opaque token with no connection information.
+Every Corvi resource that **issues an application token or password** supports `spec.secretTemplate.metadata.name` and `spec.secretTemplate.metadata.annotations`. The reconciled Kubernetes `Secret` is `Opaque`, in the same namespace, and has **individually addressable, flat `data` keys** containing *everything needed to connect and authenticate* using **one explicitly declared connection shape**: `mcp`, `rest`, or `smtp`.
 
-Use a common optional resource field:
+**There is no `credentials.json`, `connection.json`, embedded JSON, secret-bundle file, or mandatory connection descriptor key.** No app needs to parse JSON to use the Secret: consumers use `secretKeyRef`, mounted individual keys, or `envFrom` where appropriately trusted. The operator writes encoded values into Kubernetes `Secret.data`; a Secret's base64 is **not encryption**. CRD `spec` and `status` contain *only references and non-sensitive readiness metadata*, never token contents.
+
+**Gateway-scoped and direct-provider credentials are different authority models:**
+
+- **`MailCredential`** issues **Corvi policy-scoped** credentials, bound to exactly one `MailIdentity` and an action set. It **REQUIRES** a valid `MailProvider.spec.gatewayRef` pointing to an active CorviGateway, even if the provider supports direct app passwords. **When gatewayRef is absent, explicitly reject issuance** with `GatewayRequiredForScopedCredential`; do not generate a Secret or try the provider directly. When the gateway is bound but suspended/unready, keep issuance unavailable; **no direct fallback**.
+- **`ProviderAppCredential`** requests **provider-native**, independent app-token issuance for a `Mailbox` or (only when supported) a `MailIdentity`. It is valid **only when the provider has no gatewayRef**, and it publishes the provider's verified direct endpoint/auth details. It has no Corvi `permissions`, `identityRefs`, `scopes` or virtual-identity filtering semantics. For a provider with a gatewayRef, reject with `GatewayBoundUseMailCredential`; never leak a direct credential that bypasses the gateway. These kinds may share one Secret-output implementation, but **must not silently convert between issuance modes**.
+
+The implied routing rule is therefore: **bound provider → Corvi gateway credential and endpoint; unbound provider → independently issued provider-native app credential and endpoint, but never a Corvi-scoped credential.** A provider management resource may exist without either credential producer. Attachment, detachment or changes of target require explicit issuance/re-authorization and revocation, not opportunistic privilege expansion.
+
+## 1. Declarative resource shapes
 
 ```yaml
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailCredential
+metadata:
+  name: notifications-mcp
+  namespace: corvi-system
 spec:
+  shape: mcp                   # explicitly one of: mcp | rest | smtp
+  identityRef:
+    name: notifications
+  permissions:                 # Corvi grant, enforced by bound gateway
+    - mail:messages:list
+    - mail:messages:send
   secretTemplate:
     metadata:
-      name: notifications-mail
+      name: notifications-mcp-connection
       annotations:
-        reloader.stakater.com/match: "true"
+        example.com/application: notifications
 ```
 
-`secretTemplate.metadata.name` may be omitted: the reconciler deterministically generates a DNS-compliant name scoped to the credential resource. `metadata.annotations` is an arbitrary string map **subject to security/admission policy**, with bounded size and reserved `corvi.naktis.eu/*` controller annotations disallowed in user input. The user **cannot** set `Secret.data`, `type`, `ownerReferences`, `immutable`, `namespace`, service-account-token annotations or controller-owned identity/rotation metadata through this template. A Secret is always created in the producing resource's namespace, never an arbitrary destination namespace.
-
-In v1alpha1 the contract applies to **`MailCredential` (gateway-issued app credentials)** and to **provider-backed app-token/credential issuance resources** where the provider management API advertises this capability (e.g., a dedicated mailbox app-credential resource or explicitly modeled mailbox app-token subresource). Do not assume every `Mailbox` or `MailProvider` can issue tokens. The *same Secret template and connection document schema* is reused by every supported credential producer. Where a single `MailCredential` requests portable auto routing, **direct mode is restricted to a single identity/physical mailbox with a demonstrably equivalent upstream permission boundary**; multi-identity gateway OAuth grants must not be silently translated into a broad upstream app password.
-
-`MailCredential` remains a Corvi grant/credential resource, **not** the provider's OAuth refresh-token vault. If a provider-management app-token resource is implemented separately, it may reuse the publication contract without reclassifying an upstream app password as a Corvi OAuth access token. Both paths use the same secure Secret output abstraction but keep independent credential issuance/authorization.
-
-## 1. Routing and target resolution
-
-**`connection.strategy: auto` is the normal and preferred behavior.** Determine the active connection target from the authoritative graph `MailIdentity.mailboxRef → Mailbox.providerRef → MailProvider.gatewayRef?` (ADR-0013):
-
-| Provider/gateway state | Issued credential and published endpoints |
-| --- | --- |
-| Provider **has no** `spec.gatewayRef` | **Direct provider** connection only when the provider can issue an independent app-scoped credential and publish validated IMAP/SMTP/JMAP or provider-supported protocol endpoints |
-| Provider has a valid `gatewayRef` and gateway mail service is **enabled** | **Corvi gateway** connection: Corvi-audience, scoped, per-identity OAuth Client Credentials (when supported) for REST/MCP and/or separately issued SMTP AUTH credential, with externally reachable Corvi endpoints |
-| Provider has `gatewayRef` but gateway is **suspended, not Ready, missing or unresolved** | **Unavailable/Pending**. Do **not** switch to direct provider access, export provider refresh tokens, or issue an unscoped app password as fallback |
-| Explicit `gatewayRef` changes, appears or disappears | **Security-sensitive routing change**: revoke/deactivate old published capability before reissuing an appropriately scoped credential for the new target and updating the Secret |
-
-A `CorviGateway.spec.suspended: true` is an intentional mail-serving pause, **not** permission to bypass gateway policy. The user may deliberately detach `MailProvider.spec.gatewayRef` to enter direct mode, but this is an audited change and requires grant/policy revalidation. Do not publish an inaccessible `*.svc` address as the only endpoint for an app expected to run outside the cluster; gateway publication metadata must specify a verified **client-reachable** URL/hostname and scheme, separately from the internal Service address. Use only configured/observed Gateway API routing/approved service exposure; don't fabricate a DNS name from an ingress class or merely from `metadata.name`.
-
-**No automatic privilege expansion:** Corvi might hide messages and limit sending by virtual `MailIdentity`; a provider app password often covers the **entire physical Mailbox**. Direct mode MUST prove the provider-issued token enforces the same read/sender/recipient restrictions or a specifically approved, independently isolated physical mailbox. If this cannot be guaranteed, mark `UnsupportedIsolation` and **do not generate the direct Secret**. An app token for one MailIdentity cannot turn into a broadly usable raw mailbox password because a gateway was detached. Do not transform Corvi client bearer tokens into upstream provider tokens or expose Corvi's internally held upstream OAuth refresh tokens.
-
-Provider capabilities and exact protocol auth (IMAP/SMTP app password, OAuth SASL, JMAP Bearer, etc.) are independently verified. For providers with **no supported token-issuance API**, report `UnsupportedCapability` rather than generating an invalid credential or reusing the provider-admin credential. Read/send may require **separate** credentials, protocols, scopes and endpoints; never pretend a provider-issued token is valid for an unsupported service. Similarly, Corvi REST/MCP OAuth credentials are **not** SMTP AUTH credentials unless a dedicated SMTP OAuth profile is explicitly implemented.
-
-## 2. Secret content and a canonical portable contract
-
-The generated Kubernetes Secret is `type: Opaque` and MUST contain **`data["connection.json"]`**, UTF-8 JSON in a Secret data key, encoding a versioned connection document, e.g.:
-
-```json
-{
-  "version": "corvi.naktis.eu/connection/v1",
-  "mode": "gateway",
-  "revision": "example-revision",
-  "grants": [
-    {
-      "identity": {"id": "notifications", "address": "alerts@example.test"},
-      "actions": ["mail:messages:send"]
-    }
-  ],
-  "services": {
-    "rest": {"url": "https://mail.example.test/v1"},
-    "mcp": {"url": "https://mail.example.test/mcp"}
-  },
-  "auth": {
-    "oauth": {
-      "type": "oauth2_client_credentials",
-      "tokenUrl": "https://auth.example.test/oauth/token",
-      "clientId": "example-client",
-      "clientSecret": "<secret-in-kubernetes-secret-only>",
-      "resource": "https://mail.example.test",
-      "scopes": ["mail:messages:send"]
-    }
-  }
-}
+```yaml
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: ProviderAppCredential
+metadata:
+  name: alerts-direct-smtp
+  namespace: corvi-system
+spec:
+  shape: smtp
+  targetRef:
+    kind: Mailbox             # OR MailIdentity, if provider explicitly supports it
+    name: alerts
+  secretTemplate:
+    metadata:
+      name: alerts-direct-smtp
+      annotations:
+        example.com/application: alerts
 ```
 
-**Illustrative endpoints and placeholder values only**, not deployed Corvi hostnames. Redacted, complete examples matching the proposed schema are committed for [gateway](../../api/examples/gateway-connection.example.json) and [provider-direct](../../api/examples/provider-direct-connection.example.json) modes. The JSON files are design fixtures, **not Kubernetes Secrets and not usable credentials**. In direct mode the document instead carries only supported `imap`, `smtp` and/or `jmap` services, with verified hostnames, ports, TLS modes, SNI/certificate trust requirements, upstream username/account selector, and **service-specific** `app_password`/`api_token` (future provider-supported, self-contained OAuth client credentials require a separately specified refresh/auth profile and are **not** in the v1alpha1 direct schema). Where JMAP is supported, include its Session URL and authenticated JMAP account selection, not a fictional SMTP endpoint. Include provider endpoint provenance/transport generation and optional expiry/rotation timestamps as appropriate. Never serialize a token that has already expired or cannot be renewed safely. **The v1alpha1 direct contract only publishes independent provider app-password/API-token credentials**; it does not copy temporary upstream OAuth access tokens or refresh tokens from Corvi's internal provider connection.
+Both kinds expose **exactly one shape**, and each resource generates **exactly one Secret**. For MCP + REST + SMTP output, create separately authorized credential resources/Secrets; a gateway OAuth client MAY internally reuse a grant only if the issuer explicitly supports it, but generated outputs still have one deterministic shape. A single generated app Secret is bound to one identity/mailbox and cannot flatten multiple identity-specific policies into an ambiguous list. Corvi's **interactive** OAuth grants may still span several identities (ADR-0009); that is a separate authorization flow.
 
-A gateway connection may grant **multiple identities**, and the bundle must keep `grants[]` separate by identity, **not union actions** across mailboxes. Provider-direct connections advertise **exactly one** approved identity and its scoped `capabilities`. The current server-side grant still wins if permissions are later reduced. For direct IMAP/SMTP/JMAP, the actual app credential must be provider-issued and valid for the listed service (not a Corvi token).
+The `secretTemplate` is optional. Without an explicit name, derive a deterministic DNS-safe Secret name from the issuing resource (and avoid cross-kind collisions). Only `metadata.name` and `metadata.annotations` are user-configurable in this template; keys/values have bounded lengths and an independently reviewed annotation allow-policy. The Secret's namespace is always the producer namespace. Reject attempts to control `Secret.data`, `stringData`, `type`, `immutable`, `ownerReferences`, `namespace`, labels used for controller authorization, service-account-token annotations or reserved `corvi.naktis.eu/*` metadata. User annotations can cause third-party controllers to replicate Secrets; prohibit unsafe replication/cross-namespace sync without explicit administrative authorization.
 
-The document must be self-contained for a client capable of the listed protocol. Required information per case:
+## 2. Provider capability and credential granularity
 
-| Connection | Mandatory fields when applicable |
+The provider's **actual API/protocol capabilities** determine whether direct application credentials can be issued and how narrowly the provider itself enforces them:
+
+| Provider capability | Requested `ProviderAppCredential.targetRef` | Result |
+| --- | --- | --- |
+| Native **per-identity** app tokens | `kind: MailIdentity` | Supported only when the provider guarantees the token cannot access sibling identities or additional mailbox contents; advertise `providerIdentity` granularity |
+| Native **per-mailbox** app tokens | `kind: Mailbox` | Supported; advertise `providerMailbox` granularity and the **entire physical mailbox** authority |
+| Provider only supports mailbox-wide tokens | `kind: MailIdentity` | **Reject `UnsupportedCredentialGranularity`**; never represent mailbox-wide access as identity-scoped |
+| Provider has no independent app-credential issuance API | Either kind | **Reject `UnsupportedCredentialIssuance`**; don't reuse admin passwords, upstream OAuth refresh/access tokens or create fictional tokens |
+| Provider supports issuance but not requested shape `mcp`/`rest`/`smtp` | Either kind | **Reject `UnsupportedCredentialShape`**; don't mislabel IMAP/JMAP/management APIs as REST/MCP |
+
+Provider plugins should advertise typed capabilities `appCredentials.shapes[]` and `appCredentials.granularities[]` (e.g., `providerIdentity`, `providerMailbox`), plus per-shape authentication and revocation support. Discovery hints are **not authorization**: the issuer must verify provider support, identity/mailbox ownership, acceptable sender/read boundaries, credential independence and the actual returned transport endpoint before publication. Upstream provider credentials are never Corvi-scoped credentials. In particular, a provider-wide management API token cannot be relabeled as an app token and sent to an application.
+
+One provider may support both granularities or only one. Do not pretend that arbitrary virtual identity filtering, attachment redaction or recipient/send policies can be enforced by a direct mailbox-wide credential. If the requested target implies restrictions the provider cannot enforce, reject; a caller that explicitly targets an entire `Mailbox` is requesting that provider-native mailbox authority, subject to independent administrative approval, not a Corvi MailIdentity scope.
+
+**Direct provider `mcp` or `rest` requires a real corresponding provider endpoint and independently issued app auth for that service.** SMTP direct mode requires a verified SMTP submission endpoint. A JMAP HTTPS Session API is **not automatically REST-shaped**, an IMAP endpoint is not REST/MCP, and a provider's administrator API must not become an application mail credential. Additional protocol shapes (e.g. `imap`, `jmap`) require a future explicit versioned extension rather than guessing.
+
+## 3. Required flat Secret keys
+
+All keys are **individual UTF-8 string values in `Secret.data`**. No nested serialized objects, arrays, blobs, credentials.json or connection.json. The exact allowed/required key sets are described in the [JSON Schema design contract](../../api/generated-connection-secret.schema.json); the following table is normative for v1alpha1.
+
+| Output shape | Mandatory connection/auth keys |
 | --- | --- |
-| Gateway REST/MCP | externally reachable `services.rest.url`, `services.mcp.url` only if enabled; exact OAuth `tokenUrl` (and issuer/discovery URI if needed), `clientId`, protected client credential/approved auth method, `resource` audience, scopes and **per-identity `grants[]` with independent action sets** |
-| Gateway SMTP AUTH | hostname/port, STARTTLS or implicit TLS, trusted server name, **distinct** SMTP username/password or explicitly supported Corvi SASL token profile; sender address and allowed actions |
-| Direct IMAP | verified host/port/TLS/serverName, username/mailbox identifier and app-token authentication mechanism |
-| Direct SMTP | verified host/port/TLS/serverName, username and app-token authentication mechanism, sender/envelope restrictions |
-| Direct JMAP | HTTPS Session URL and account selection, bearer/API token and relevant JMAP read/submission capability, verified HTTPS trust |
-| Any connection | schema version, `mode`, identity/address association, action capabilities, generated credential revision; no unadvertised protocols |
+| **All** | `CONNECTION_SHAPE` (`mcp`/`rest`/`smtp`), `CONNECTION_MODE` (`gateway`/`providerDirect`), `AUTH_TYPE`, `CREDENTIAL_GRANULARITY` (`corviIdentity`/`providerIdentity`/`providerMailbox`), `PROVIDER_NAME`, `CREDENTIAL_REVISION`, and **`IDENTITY_NAME`** or **`MAILBOX_NAME`** according to granularity |
+| **MCP** | `MCP_URL` (actual HTTPS Streamable HTTP MCP endpoint), plus the applicable auth keys below |
+| **REST** | `REST_URL` (actual HTTPS API base URL), plus the applicable auth keys below |
+| **Gateway MCP/REST OAuth client credentials** | `OAUTH_TOKEN_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_RESOURCE`, `OAUTH_SCOPES` (space-separated), `AUTH_TYPE=oauth2_client_credentials` |
+| **Provider-direct MCP/REST bearer app token** | `API_TOKEN`, `AUTH_TYPE=bearer_token`, and a provider-verified `MCP_URL` or `REST_URL` respectively |
+| **SMTP** | `SMTP_HOST`, `SMTP_PORT`, `SMTP_TLS_MODE` (`starttls`/`implicit`), `SMTP_SERVER_NAME`, `SMTP_AUTH_MECHANISM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS`, `AUTH_TYPE=smtp_password` |
 
-**Use `Secret.data`, not plaintext GitOps `stringData` values** for reconciled output. `connection.json` is itself **sensitive** even though the Kubernetes API base64-encodes it. The operator may optionally publish **stable convenience data keys** (e.g. `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `IMAP_HOST`, `IMAP_USERNAME`, `IMAP_PASSWORD`, `CORVI_API_URL`, `CORVI_MCP_URL`, `OAUTH_TOKEN_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`) for compatible consumers; never populate keys for unsupported protocols, and treat any duplicated credentials as secrets. **Canonical `connection.json` remains the source of truth**, and convenience key names are versioned. Clients that need only one key can mount it with `secretKeyRef`, and full clients can mount the connection document without visiting a separate config resource.
+For SMTP, `SMTP_ENVELOPE_FROM` is optional if the approved envelope address differs; the producer must verify sender restrictions with the actual gateway/provider and must not advertise forbidden From identities. Publish additional CA/trust material as a separately named key only when the endpoint uses an explicitly configured private trust root; never silently weaken TLS verification. For gateway OAuth, `OAUTH_RESOURCE` must be the exact Corvi mail-resource audience and `OAUTH_SCOPES` reflects the requested action classes; the server's grant, policy and identity binding remain authoritative, not the Secret text. Direct-provider REST/MCP static bearer tokens and SMTP app passwords are **different authentication mechanisms** and must not be interchanged.
 
-Never place passwords, bearer tokens, refresh tokens, authorization codes, password-bearing URLs, or secret JSON in annotations, labels, owner references, CRD spec/status, ConfigMaps, Helm values, admission error messages, events, diffs or audit traces. A Secret may include harmless routing/status annotations such as version and owner UID, but not credentials.
+**No unused protocol keys:** an MCP-shaped Secret does not contain `REST_URL`, SMTP credentials or hidden provider tokens; REST similarly contains no MCP/SMTP keys; SMTP contains no OAuth client secret or HTTP URL. Generated Secret keys are a versioned API; unknown/unsupported auth combinations fail publication rather than guessing. A Secret is useful to a client without additional provider-management API calls.
 
-## 3. Lifecycle, rotation and collision safety
+Examples of **decoded individual `data` values** are in the [gateway](../../api/examples/gateway-connection.example.json) and [provider direct](../../api/examples/provider-direct-connection.example.json) fixtures. These JSON files are *test fixtures documenting key/value maps*, **not files placed inside Kubernetes Secrets**. Actual generated Secrets contain the individually named keys, not a JSON-valued key.
 
-- **Ownership:** Generated Secret `metadata.namespace` equals the issuing resource namespace; deterministic default name, or explicit `secretTemplate.metadata.name`. Add immutable controller ownership labels/annotations and an ownerReference **only to the exact token-producing resource**, never its parent provider, mailbox, identity or gateway. Credentials and their Secrets have lifecycle relationships, but deleting a gateway must not cascade-delete independently issued provider credentials.
-- **No takeover:** An existing Secret with the chosen name is **not** automatically adopted or overwritten, even if its labels look similar. Only mutate a Secret already proven to belong to this exact credential UID using its ownerReference and verified controller metadata. Otherwise `SecretNameConflict` and no credential disclosure. A Secret controlled by another manager or user remains untouched.
-- **Name/annotation changes:** Reconcile desired metadata with Kubernetes optimistic concurrency and server-side apply. Preserve **operator-owned** Secret keys/labels, reject user annotation keys reserved by `corvi.naktis.eu/`, service-account-token annotations and security-sensitive third-party annotation controllers where policy forbids them. Changing Secret name requires a controlled **reissue/cutover** and cleanup/revocation; never leave the old Secret as a valid unnoticed credential.
-- **First issuance:** Generate/obtain an app credential only once per intended grant/target revision and stage it securely. Never generate a second one merely because a Secret `create`/update had a conflict or an operator restarted. Use a durable protected issuance journal/secret custody mechanism and idempotency/lookup where the provider supports it. For providers that reveal token material only once, first persist it in a protected handoff staging store and only then publish the Secret. If publication fails, report and retry safely; never leak the only token in logs or CRD status.
-- **Rotation:** Resolve current target/capabilities and form the **complete** Secret contents for that target. Atomic Kubernetes Secret update of `data` replaces old protocol keys (rather than merge), increments an opaque connection revision, and notifies consumers via ordinary Kubernetes change semantics. Old credential revocation and Secret publication must follow a **fail-closed transition protocol** with no old gateway/direct bypass; manage cache/propagation delays and don't claim instant container-env reload. If a consumer reads Secret keys via environment variables, it must restart to see updates; projected volume refresh is eventual and applications must reload.
-- **Detachment/rebinding:** Before switching gateway/direct or moving providers, withdraw old routing and tokens from the effective authorization/snapshots. **Do not silently preserve upstream token material** in a gateway Secret or publish gateway credentials in direct provider mode. A previously consented gateway OAuth grant is not authority for a provider-wide app token. If safe rotation/revocation cannot be proven, mark `MigrationPending` / `ReauthorizationRequired` and keep Secret unready/unavailable, rather than publishing a misleading connection.
-- **Deletion:** On credential resource deletion, revoke its issued app token **when the issuer supports revocation**, clear the generated Secret after safe finalizer processing, and retain unrelated provider resources, existing mailbox contents, user-created Secrets and OAuth grants belonging to other credentials. Report provider-side revoke failure without claiming external revocation succeeded.
-- **Status:** `status.secretRef.name` (safe, no value), `status.connectionMode` (`Gateway`, `ProviderDirect`, `Unavailable`), `status.credentialRevision`, `status.observedGeneration`, `status.conditions` (`Ready`, `Issued`, `Published`, `RotationPending`) with safe reasons (`UnsupportedCapability`, `UnsupportedIsolation`, `SecretNameConflict`, `EndpointUnavailable`, `GatewaySuspended`, `ReauthorizationRequired`, etc.). Status must not contain token hashes, raw endpoints with userinfo, or secret contents.
+## 4. Issuance, attachment and lifecycle
 
-**Annotations can trigger external Secret copying/sync controllers.** The requested custom annotations are not inherently safe: user/config policy must allow the intended keys/values, enforce namespace controls and block accidental cross-namespace credential replication (or require a separate privileged approval). Provide an explicit allowed-annotation policy; do not assume that arbitrary annotations are passive metadata.
+1. Resolve the producer's identity/mailbox and provider chain using authoritative same-namespace CRDs and validate provider capability, requested shape, target, grant and endpoint. `MailCredential` with **no gatewayRef must fail** `GatewayRequiredForScopedCredential` even if direct SMTP app tokens exist. `ProviderAppCredential` with a bound gateway must fail `GatewayBoundUseMailCredential`, including when the gateway is suspended or not Ready.
+2. Validate exact gateway/client-reachable endpoint from approved published routes, never invent a DNS hostname or export an in-cluster `.svc` name as the only externally usable URL. Direct endpoints come from verified transport/provider data and must match the requested shape and TLS/auth profile. Don't copy provider admin token or internally held upstream OAuth access/refresh token.
+3. Obtain the app token through the appropriate **independent authority**: Corvi OAuth issuer/SMTP credential service for scoped gateway access, or provider-supported app-credential administration API for direct native access. Fail if issuer lacks the required granularity, shape, secure token handoff or one-time issuance semantics.
+4. Stage one-time token material securely and idempotently before publication (approved protected Secret/vault handoff; never store it in CRD status, logs or GitOps). Publish the **entire shape-specific flat key map atomically** with `Secret.data`; replace old keys rather than merge them. Mark `Ready` only after successful publication and usable validated endpoint data.
+5. On Secret name/annotation changes, rotate/reissue safely. An existing Secret not provably owned by the exact producing object UID is **never adopted/overwritten** (`SecretNameConflict`). Use optimistic resourceVersion checks, bounded retries and consistent Secret ownerReferences to **only the credential-producing CRD**, not to gateway/provider/mailbox/identity resources.
+6. For any provider `gatewayRef` bind, detach, change, mailbox/identity reparenting or shape/target revision, **withdraw/revoke the old credential and old route before publishing the new one**. Reauthorization or explicit human-approved conversion is mandatory when moving between Corvi scope and provider-native mailbox authority. **Never automatically convert scoped credentials into direct ones.** If upstream revocation cannot be confirmed, block migration/issuance and report `MigrationPending` or `CredentialRevocationUnconfirmed`; retain no old Secret that could still bypass new gateway policies. Secret deletion alone is not provider-side token revocation.
+7. Reconcile statuses without secrets: `status.secretRef.name`, `status.connectionMode`, `status.shape`, `status.granularity`, `status.credentialRevision`, `status.observedGeneration` and bounded `Ready`/`Issued`/`Published`/`RotationPending` conditions with safe reasons (`GatewayRequiredForScopedCredential`, `GatewayBoundUseMailCredential`, `GatewayUnavailable`, `UnsupportedCredentialGranularity`, `UnsupportedCredentialShape`, `UnsupportedCredentialIssuance`, `EndpointUnavailable`, `SecretNameConflict`, `MigrationPending`). No raw credential, secrets, message data, hashed token material or password-bearing URL in status.
 
-## 4. Kubernetes RBAC, Secret publisher and control-plane boundaries
+Secret volumes eventually update but clients must reload them; environment variables from Secrets do **not** hot-reload. Never suggest instant revocation across unobserved client workloads. The gateway continues enforcing current per-identity grants even when a previously copied Secret is stale. Provider-native tokens require actual upstream revocation, so revocation capability and failure behavior must be visible in sanitized conditions.
 
-The mail gateway, OAuth resource server, provider gRPC plugin, bridge and mail client Pods **retain `automountServiceAccountToken: false` and no Kubernetes Secret API rights**. A credential producer that must write generated Secrets needs API permissions, so use a **dedicated `corvi-credential-publisher` controller or an explicitly enabled, scoped role on the operator**. The default operator Role may remain Secret-write-free when no generated Secrets are requested.
+## 5. Security and Kubernetes RBAC
 
-- Read/watch token-producing CRDs and necessary non-secret parent references. For generated Secrets, use `get`, `create`, `patch`, `update`, `delete` as needed, **no `list/watch secrets` by default**. `create` cannot be limited by Kubernetes RBAC `resourceNames`; `delete` can be narrowed to known names only when feasible. Avoid wildcard resources, token creation, RBAC mutation and cross-namespace Secret writes. Isolate publisher namespaces or use an independently administered validating admission policy that verifies the controller identity, generated Secret naming/owner UID and allowed data/annotations. RBAC alone cannot force `Secret.create` to target a matching resource.
-- Keep token-issuing RPCs authenticated and narrowly authorized. Provider plugins return one-time secret material through a bounded, mTLS protected **secret-handoff** channel, never standard `TransportResolver` responses. For Corvi OAuth Client Credentials, issuer registers an explicitly scoped confidential client and the publisher receives only the specific client credential needed for this generated Secret, not its token-signing key or unrelated refresh tokens.
-- The publisher temporarily handles sensitive app credential material and is therefore a higher-trust workload. Rootless UID/GID, drop `ALL` capabilities, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `RuntimeDefault` seccomp, bounded memory and network egress, and one scoped API token. Protect against log/trace/export leaks and prevent reading arbitrary upstream mail or OAuth signing keys. Do not mount the operator's broader API token into the plugin.
-- Kubernetes **control plane uses CRDs and Secret objects**, not an added PostgreSQL/Redis database for generated Secret status. A recoverable staging mechanism for one-time issued token material may be an encrypted existing Secret/approved external vault plus an idempotent issuance record, but must not be embedded in resource status or shared broadly. Retain Kubernetes at-rest encryption, etcd audit/backup security and scoped Secret consumers.
+The mail gateway, OAuth resource server, provider gRPC plugin and bridges **remain rootless, read-only-root and without Kubernetes API tokens or Secret read/write API permissions** (ADR-0011). A dedicated `corvi-credential-publisher` controller or explicitly enabled, separately permissioned operator component may issue and write Secrets.
 
-## 5. Acceptance tests
+- Use namespace-scoped `get/create/update/patch/delete` only as needed for generated Secrets, **without blanket `list/watch secrets`**; narrow subject/namespace and enforce an independent admission policy for allowed generated Secret name, owner UID, annotations and data keys. Kubernetes RBAC alone cannot constrain a Secret `create` verb to arbitrary per-resource names. Without issuing credentials, the operator can remain Secret-write-free.
+- Provider plugins hand off one-time native app credentials only through mutually authenticated, bounded **secret-handoff** methods, never via ordinary transport resolver RPC or logs. Corvi issuer does not hand its signing key or unrelated refresh tokens to the publisher.
+- The publisher needs a narrowly scoped API token and remains subject to UID/GID nonroot, `allowPrivilegeEscalation=false`, `capabilities.drop=[ALL]`, `readOnlyRootFilesystem=true`, `seccompProfile=RuntimeDefault`, constrained egress and short-lived projected Kubernetes API credentials. No provider/plugin Pod gains an API token merely to write the generated Secret.
+- CRD management state uses **Kubernetes CRDs/Secrets/Leases, no SQL or Redis**. One-time credential staging uses an approved encrypted Secret/vault and safe issuance record; never use CRD status as a secret store. Kubernetes at-rest encryption and backup/audit restrictions are still required.
 
-1. A `MailCredential` (or supported provider app-token resource) with `secretTemplate.metadata.name` and custom safe annotations produces a same-namespace, owned Secret; missing name produces a stable deterministic name. Invalid/unsafe annotation policy is rejected.
-2. The decoded `connection.json` has every endpoint, port, TLS requirement, username/account selector, credential, authentication mode, effective action and grant/audience detail needed for **each actually supported** published protocol. Unusable/made-up endpoints and unsupported service entries are absent.
-3. An attached, ready gateway produces Corvi REST/MCP credentials and endpoints, not exposed upstream provider OAuth refresh tokens or unfiltered IMAP password. A provider with no gatewayRef produces provider-direct credentials and verified direct endpoints **only if supported**.
-4. An attached but suspended/unready/nonexistent gateway never falls back to direct provider credentials. Omitted gatewayRef is **direct mode**, not an invalid parent; explicit invalid gatewayRef is not direct mode.
-5. Direct mode for a virtual/filter-restricted identity, provider without app-token issuance, or unsupported authentication mechanism fails closed with a precise reason rather than exporting a broad mailbox password or pretending the token can authenticate through OAuth.
-6. A multi-identity `MailCredential` works with an authorized gateway and matching audience; it cannot automatically produce a direct provider credential spanning unrelated mailboxes/providers.
-7. Renaming an output Secret, reparenting a mailbox, changing gatewayRef, rotating tokens or changing endpoint URLs cannot leak stale credentials, retain obsolete protocol keys or expand OAuth grants without explicit authorization.
-8. Resource status/metadata/CRDs, Helm history, logs/events/metrics, and gateway snapshots expose **zero** plaintext credential material, even for one-time provider tokens.
-9. An existing unrelated Secret with the requested name is not adopted/overwritten. Reconciler restart after a one-time token issue but before Secret publication recovers safely or fails closed without losing or logging the token.
-10. Secret publication functionality does not require adding API tokens or Secret RBAC to mail gateways, OAuth runtime, provider plugins or bridge Pods; only a narrowly scoped publisher/operator identity has bounded Secret write authority.
-11. Kubernetes Secret volume/env consumers can reconstruct usable settings from a single Secret. Updating projected Secret data or restarting env-based consumers follows documented Kubernetes semantics.
-12. Deleting a gateway or unbinding a provider never unintentionally deletes unrelated upstream resources, owner OAuth grants or provider admin credentials. Credential deletion handles app-token revoke and its own generated Secret.
+## 6. Acceptance tests
+
+1. Every app-credential-producing CRD supports `secretTemplate.metadata.name` and custom policy-approved annotations, deterministic omitted-name default and same-namespace publication. A foreign Secret name conflict never causes takeover.
+2. There is **no `credentials.json`, `connection.json` or other serialized credential document inside any generated Secret**. All published `Secret.data` entries are flat UTF-8 strings with precisely the required shape-specific keys and no keys from a different protocol.
+3. Each credential explicitly declares `shape: mcp|rest|smtp`; exactly one set of endpoint/auth keys appears. Gateway MCP/REST uses Corvi-scoped OAuth; SMTP has verified host/port/TLS/user/password; direct MCP/REST/SMTP requires real provider-side support.
+4. `MailCredential` targeting an identity whose provider has **no gatewayRef** is rejected with **`GatewayRequiredForScopedCredential`** and publishes no usable Secret. An invalid/suspended gateway does not cause direct fallback.
+5. `ProviderAppCredential` targeting a gateway-bound provider is rejected, never bypasses gateway authorization, and cannot reuse upstream administration or provider OAuth refresh credentials.
+6. Provider with per-identity native issuance can fulfill an explicit `MailIdentity` target. A provider supporting **only mailbox-wide** tokens can fulfill an explicit `Mailbox` target but must reject identity target as `UnsupportedCredentialGranularity`. Neither is described as Corvi policy-scoped.
+7. Binding or detaching a provider never automatically converts a scoped gateway credential to a provider mailbox password; revoke the old token before a replacement is published. Unsafe or unverifiable transitions report blocked status.
+8. Every generated Secret includes verified usable connection details, exact authentication type, grant/authority granularity and revision. No invented public DNS, implicit JMAP→REST mapping or deprecated SMTP TLS downgrade.
+9. Deleting credentials cleans up only their own Secrets and revokes the issued app token where supported. Parent provider/gateway deletion never garbage-collects unrelated producer resources or upstream mailboxes.
+10. Publisher permissions and admission prevent unauthorized cross-namespace Secret publication, annotation-triggered unsafe replication and secret leakage. No added Secret API token in ordinary gateway or plugin Pods.
 
 ## Consequences
 
-Portable app credentials become directly consumable from **one generated Kubernetes Secret** in either Corvi-gateway or direct-provider mode, with customizable metadata, and without coupling the control plane to a live gateway. This adds a security-sensitive credential-publication controller, provider-capability negotiation, endpoint-validation and no-bypass migration discipline. **The CRD/resource schema and controller are proposals; none of the Secret issuance/publishing flows is implemented yet.**
+Corvi has two explicit application-credential security domains and one reusable flat-key Secret output contract, with safe default-deny routing. Consumers need only specific Kubernetes Secret keys. The trade-off is extra credential resources when an app needs multiple protocols and strict refusal of implicit mode changes. The design does not claim any actual Kubernetes CRD/controller exists.

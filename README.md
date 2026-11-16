@@ -14,11 +14,12 @@ Corvi is a planned open-source mail gateway and management platform from Naktis 
 
 The key boundaries are:
 
-- **Standalone data plane:** A gateway with built-in IMAP/SMTP clients, mail identities, content policies and scoped credentials. A minimal deployment needs only a process/container and configuration file.
+- **Standalone data plane:** A gateway with built-in **IMAP/SMTP and native JMAP clients**, mail identities, content policies and scoped credentials. A minimal deployment needs only a process/container and configuration file.
 - **Optional control plane:** Provider configuration discovery, resource reconciliation, credential management and versioned configuration delivery. It is not in the message-processing path.
 - **Optional Kubernetes operator:** GitOps/CRD reconciliation and optional OCI provider plugin deployments.
 - **Provider plugins:** gRPC services for provider-specific transport resolution, administrative operations and upstream provider usage/health metrics. Migadu is the initial target.
 - **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
+- **Native JMAP:** Direct RFC 8620/8621 HTTPS access to mail, synchronization, blobs and email submission through the in-process Rust gateway, with Fastmail as the first interoperability target. JMAP does **not** require a bridge, proxy or provider plugin.
 - **Observability:** OpenTelemetry and Prometheus/OTLP, with provider plugins acting as exporters. TLS/mTLS is mandatory for internal gRPC, and Kubernetes may opportunistically use cert-manager's CSI driver.
 
 **Namespace convention:** Corvi-owned API groups and metadata use the `naktis.eu` domain, generally under `corvi.naktis.eu` (for example, `mail.corvi.naktis.eu`). OCI reverse-DNS annotation keys use `eu.naktis.corvi.*`. Third-party registry hosts and documentation URLs retain their original domains.
@@ -36,6 +37,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 **[ADR-0005: Shared public mail API contract](docs/adr/0005-public-mail-api.md)** establishes consistent client-facing authorization, filtering, pagination, sending and idempotency semantics across REST and MCP.
 
 **[ADR-0006: Provider-managed local mail transport bridges](docs/adr/0006-local-transport-bridges.md)** specifies direct versus existing/managed bridge topology, OCI metadata-assisted discovery, validated runtime provisioning, local endpoint/TLS security and Proton Mail Bridge compatibility constraints. A [proposed JSON Schema](api/provider-transport-bridge.schema.json) describes typed bridge prerequisites.
+
+**[ADR-0007: Native JMAP mail transport](docs/adr/0007-native-jmap-transport.md)** adds provider-neutral JMAP reading, searching, synchronization and `EmailSubmission` sending alongside IMAP/SMTP, while preserving identity grants and disclosure filtering. The [transport JSON Schema](api/mail-transport.schema.json) models separate read/submission protocols and prohibits implicit protocol fallback.
 
 ## Proposed public API specifications
 

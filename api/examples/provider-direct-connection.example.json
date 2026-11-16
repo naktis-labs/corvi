@@ -1,5 +1,5 @@
 {
-  "CONNECTION_SHAPE": "smtp",
+  "CONNECTION_TYPE": "smtp",
   "CONNECTION_MODE": "providerDirect",
   "AUTH_TYPE": "smtp_password",
   "CREDENTIAL_GRANULARITY": "providerMailbox",

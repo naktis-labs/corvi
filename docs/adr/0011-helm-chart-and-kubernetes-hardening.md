@@ -37,7 +37,7 @@ Operator-created provider workloads **inherit the same security invariants** via
 - Prefer `appArmorProfile.type: RuntimeDefault` on supported clusters. Optional stronger `Localhost` profiles require node support and testing. Do not set `seccompProfile: Unconfined`.
 - Use the Kubernetes **Restricted Pod Security Standard**, with an externally managed namespace configured to enforce/audit/warn `restricted`. PSS alone does **not** enforce a read-only root filesystem, network policy, Secret RBAC or image digests, so use additional admission/CI controls.
 
-**Container defaults** (`controllers.defaultContainerOptions.securityContext`, including init containers):
+**Container defaults** (`controllers.<controllerName>.defaultContainerOptions.securityContext`, applied to init containers with `applyDefaultContainerOptionsToInitContainers: true`):
 
 ```yaml
 securityContext:
@@ -110,7 +110,7 @@ Multi-namespace or cluster-scoped resources require a separately enabled and doc
 
 ## 7. App-template v5 example and constraints
 
-The [gateway values example](../../deploy/helm/app-template/gateway.values.example.yaml) uses **`defaultPodOptions`** at chart root and **`controllers.defaultContainerOptions`** to cover containers and init containers. The [operator example](../../deploy/helm/app-template/operator.values.example.yaml) overrides only `controllers.operator.pod.automountServiceAccountToken: true` and selects the chart-generated `ServiceAccount` via `controllers.operator.serviceAccount.identifier`. It uses app-template's `serviceAccount` and `rbac.roles`/`rbac.bindings` for minimal namespaced RoleBindings.
+The [gateway values example](../../deploy/helm/app-template/gateway.values.example.yaml) uses **`defaultPodOptions`** at chart root and **per-controller `defaultContainerOptions`** to cover containers and init containers (set `applyDefaultContainerOptionsToInitContainers: true`). Each controller has its own values; there is no global `controllers.defaultContainerOptions` key. The [operator example](../../deploy/helm/app-template/operator.values.example.yaml) overrides only `controllers.operator.pod.automountServiceAccountToken: true` and selects the chart-generated `ServiceAccount` via `controllers.operator.serviceAccount.identifier`. It uses app-template's `serviceAccount` and `rbac.roles`/`rbac.bindings` for minimal namespaced RoleBindings.
 
 The values examples are **design fixtures**: no Corvi image release is published; `repository` and `tag` are placeholders which cannot be deployed as-is. Exact `app-template` 5.2.1 rendering must be pinned and validated before calling them a release. Every future change to `defaultPodOptions`, `defaultContainerOptions`, chart major version or plugin PodSpec builder is subject to hardening review and rendered-manifest tests. Only `corvi-operator` may have a Kubernetes API token in the default install.
 

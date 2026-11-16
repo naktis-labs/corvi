@@ -9,7 +9,7 @@
 - **Machine-readable MCP resource schemas:** [`api/mcp-resources.json`](../../api/mcp-resources.json)
 - **REST peer contract:** [`api/openapi.yaml`](../../api/openapi.yaml)
 
-This specification describes the **personal-mail data-plane MCP server**, not the Kubernetes/operator/provider-administration API. The MCP endpoint cannot create domains, aliases, physical mailboxes or provider credentials. Such functionality belongs to a separately authenticated control-plane interface.
+This specification describes the **personal-mail data-plane MCP server**, not the Kubernetes/operator/provider-administration API. The MCP endpoint cannot create domains, aliases, physical mailboxes or provider credentials. It uses the same public mail tools whether the selected upstream account uses IMAP/SMTP, native JMAP or a permitted IMAP/SMTP bridge (see [ADR-0007](../adr/0007-native-jmap-transport.md)). Such functionality belongs to a separately authenticated control-plane interface.
 
 ## 1. Protocol, discovery and transport
 
@@ -103,6 +103,10 @@ Successful calls return typed `structuredContent` matching the tool's declared `
 
 The example shows a tool result, not a `tools/list` response. Empty items do not imply no messages exist upstream; they represent an authorized, filtered view.
 
+### Upstream protocol independence
+
+The MCP protocol transports *client requests to Corvi*, **not** JMAP requests to upstream servers. A single MCP credential can select independently authorized Corvi `MailIdentity` values backed by IMAP/SMTP, native JMAP or a bridge, using the same `identityId` argument and seven tools. Upstream JMAP account IDs, Email IDs, sender Identity IDs, state tokens and blob URLs remain private and never become extra MCP tools/resources or caller-supplied identities. `mail_send` can use native JMAP `EmailSubmission/set` after MRTR and sender/recipient authorization; the client sees the same `Submission` states and idempotency behavior. JMAP EventSource push is an internal sync hint; it cannot create client-visible MCP updates before Corvi's filtering policies run. See [ADR-0007](../adr/0007-native-jmap-transport.md).
+
 ## 2. Tool catalogue
 
 The **exact proposed seven tools** and machine-readable input/output JSON Schemas are in [`api/mcp-tools.json`](../../api/mcp-tools.json). These tools are a projection over the **same Rust application services** used by REST.
@@ -133,7 +137,7 @@ All input schemas reject unknown fields. Every mail operation other than `mail_l
 
 - **Input:** Required `identityId`; optional `limit` (default 25, maximum 100), `cursor`.
 - **Output:** `{ "items": [MessageSummary, ...], "nextCursor"?: string }`.
-- Sorted by descending received timestamp. No upstream counts, hidden IDs, raw IMAP UIDs, offsets or unfiltered message subjects.
+- Sorted by descending received timestamp. No upstream counts, hidden IDs, raw IMAP UIDs, JMAP account/Email IDs, offsets or unfiltered message subjects.
 
 ### `mail_search`
 
@@ -159,26 +163,26 @@ All input schemas reject unknown fields. Every mail operation other than `mail_l
 
 - **Input:** Required `identityId`, `to` (nonempty array of email address objects), `subject`, `textBody`, `idempotencyKey`. Optional `cc`, `bcc`.
 - **Output:** `Submission` with opaque ID, identity, `queued | submitted | failed | unknown`, timestamps, and `idempotencyDurable`.
-- The agent cannot set From, SMTP envelope sender, raw MIME, HTML or arbitrary outgoing attachments in v1. Corvi derives the sender from the authorized identity and validates recipients and send policies.
+- The agent cannot set From, SMTP/JMAP submission envelope sender, upstream JMAP Identity ID, raw MIME, HTML or arbitrary outgoing attachments in v1. Corvi derives the sender from the authorized identity and validates recipients and send policies.
 - A stable idempotency key is generated for one user-intended send, reused only for exact retries. The same key and different payload yields `IDEMPOTENCY_CONFLICT`.
-- `submitted` means upstream SMTP accepted it, not that a recipient opened or received it. `unknown` means downstream ambiguity and **must not be automatically resent**.
+- `submitted` means upstream SMTP or JMAP `EmailSubmission` accepted it, not that a recipient opened or received it. `unknown` means downstream ambiguity and **must not be automatically resent**.
 - This tool is **side-effecting**. Corvi requires the MRTR confirmation flow in §4 unless an explicitly bounded unattended-send grant applies; neither tool annotations nor model text are proof of authorization.
 
 ### `mail_get_send_status`
 
 - **Input:** Required `identityId`, `submissionId`.
 - **Output:** Same `Submission` schema, reauthorized for the caller.
-- Do not return other identities' submissions or arbitrary upstream SMTP recipient details.
+- Do not return other identities' submissions or arbitrary upstream SMTP/JMAP envelope recipient details.
 
 ## 4. Multi Round-Trip Requests (MRTR): interactive send approval
 
 Corvi uses **MCP 2026-07-28 MRTR** for `mail_send` confirmation. The **default is to require approval**, except when a separately configured, narrowly scoped unattended automation grant explicitly authorizes the send.
 
-1. Validate `mail_send` arguments, sender identity, recipients, action permissions, policy and idempotency key, **without initiating SMTP delivery**.
+1. Validate `mail_send` arguments, sender identity, recipients, action permissions, policy and idempotency key, **without initiating any upstream SMTP or JMAP submission**.
 2. Return an `InputRequiredResult` with `resultType: "input_required"`, an `inputRequests.confirm_send` **`elicitation/create` form**, and an opaque `requestState`. The prompt shows the actual authorized From and recipient addresses, subject, and a safe preview (or digest) of the exact outgoing body.
 3. Seal `requestState` using authenticated encryption or a verified MAC. Bind it to the principal/credential, identity, tool, canonical payload hash, idempotency key, policy generation, expiry and one-time nonce. Never treat client-echoed state as trusted.
 4. A compliant client obtains a user's response, then **reissues the same `tools/call`** with a new JSON-RPC request ID, the original arguments, `inputResponses.confirm_send`, and byte-identical `requestState`.
-5. Require affirmative form input (a validated boolean, not arbitrary conversational text). Revalidate state, payload, permissions, identity, policy generation, nonce and expiry, then apply idempotency before any SMTP action. Declined, altered, expired, tampered or replayed confirmations fail without sending.
+5. Require affirmative form input (a validated boolean, not arbitrary conversational text). Revalidate state, payload, permissions, identity, policy generation, nonce and expiry, then apply idempotency before any upstream SMTP or JMAP submission action. Declined, altered, expired, tampered or replayed confirmations fail without sending.
 6. If the host cannot fulfill form elicitation, return a sanitized `CONFIRMATION_REQUIRED` tool error instead of silently sending. An explicitly authorized unattended automation grant may send without MRTR, but may not bypass server-side action, sender or recipient policy.
 
 Example `InputRequiredResult` (schema shape must be tested against MCP 2026-07-28):
@@ -333,7 +337,7 @@ Proposed tool-visible codes include:
 | `RATE_LIMITED` | Caller exceeded operation budget |
 | `ATTACHMENT_TOO_LARGE` | Allowed attachment exceeds MCP byte limit |
 | `IDEMPOTENCY_CONFLICT` | Key reused with a different intended message |
-| `SEND_OUTCOME_UNKNOWN` | SMTP outcome ambiguous; check submission, do not blindly retry |
+| `SEND_OUTCOME_UNKNOWN` | SMTP/JMAP submission outcome ambiguous; check submission, do not blindly retry |
 
 Error messages never return message subject, sender, matched security rule, OTP, reset URL, hidden identity, raw upstream UID or provider credentials. Do not distinguish hidden messages from nonexistent messages in either JSON-RPC codes or human-readable text.
 
@@ -362,7 +366,7 @@ A filtered-out message cannot be inferred from search hit counts, thread placeho
 - Test all context resources for two identities across separate upstream mailboxes with different permissions; context identities must exactly match `mail_list_identities`, per-identity summaries must not union grants, guessed URIs must not enumerate other identities, and policy-summary must not reveal internal sensitive matching rules.
 - Test resource list/read cache hints (`ttlMs: 0`, `cacheScope: private`), context subscriptions and resource-list change notices after grant revocation, plus no context event for hidden-only mailbox activity.
 - Test the same full fixture corpus through MCP and REST for hidden IDs, redaction, metadata/snippet leaks, count-free pagination, big attachments and stale cursors.
-- Test sends with approved sender identity, disallowed recipient, duplicate idempotency key, altered request under same key, queued delivery, unknown SMTP acceptance, and direct-relay process restart.
+- Test sends with approved sender identity, disallowed recipient, duplicate idempotency key, altered request under same key, queued delivery, unknown SMTP/JMAP submission acceptance, and direct-submission process restart.
 - Never send user email bodies to remote MCP hosts, LLM providers or logs **except through the user's intended, explicitly authorized tool invocation**. Tool return content can be passed by clients to models; policies should default to narrower exposure for agent principals.
 - No data-plane operation should depend on the provider-management gRPC service or Kubernetes operator; optional external PDPs may be separately required by explicitly configured policies.
 

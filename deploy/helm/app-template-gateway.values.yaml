@@ -1,0 +1,105 @@
+# DESIGN EXAMPLE ONLY. Corvi runtime image, entrypoint, config and health
+# paths are not implemented/published. Do not install this values file as-is.
+# bjw-s app-template v5.3.0. Render and validate against the pinned chart.
+# Values are for a DEDICATED gateway app-template release.
+# Documentation: docs/adr/0011-hardened-helm-deployment.md
+#
+# Native app-template-5.x values, not a Corvi wrapper's future values.
+defaultPodOptions:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+serviceAccount:
+  gateway:
+    forceRename: corvi-gateway
+    automountServiceAccountToken: false
+    staticToken: false
+
+controllers:
+  gateway:
+    type: deployment
+    replicas: 1
+    serviceAccount:
+      identifier: gateway
+    pod:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+    # Merge is intentional: explicit per-container security settings cannot
+    # accidentally replace the whole secure default. CI STILL inspects all
+    # rendered init containers/sidecars and operator-generated Pods.
+    defaultContainerOptionsStrategy: merge
+    defaultContainerOptions:
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+        procMount: Default
+    containers:
+      gateway:
+        image:
+          repository: ghcr.io/naktis-labs/corvi
+          # Placeholder, NOT an existing image! Replace with the real immutable
+          # image digest from a signed Corvi release before deploying.
+          digest: sha256:REPLACE_WITH_VERIFIED_IMAGE_DIGEST
+          pullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+            ephemeral-storage: 64Mi
+          limits:
+            memory: 512Mi
+            ephemeral-storage: 256Mi
+        # Corvi server listens on an unprivileged port; map 443/587 externally.
+        # Add health probes ONLY after concrete endpoints are implemented.
+        # Attach an immutable ConfigMap/Secret reference for server config.
+        # No provider-admin creds, Kubernetes API token, or host sockets.
+
+service:
+  gateway:
+    controller: gateway
+    type: ClusterIP
+    ports:
+      http:
+        port: 8080
+        protocol: TCP
+        # Additional submission/metrics ports must be explicitly enabled.
+        # No Service type LoadBalancer or NodePort by default.
+
+persistence:
+  # Writable scratch only. Production: protect with an explicit per-Pod size
+  # limit; runtime root filesystem remains read-only.
+  tmp:
+    type: emptyDir
+    medium: Memory
+    sizeLimit: 64Mi
+    globalMounts:
+      - path: /tmp
+
+# A policy-enforced default-deny NetworkPolicy and explicit DNS/provider/DB
+# egress exceptions are mandatory for deployment, but intentionally NOT
+# fabricated in this skeletal example: peer selectors/ports vary by cluster.
+# Provide them via app-template networkpolicies or reviewed rawResources.
+# Gateway API HTTPRoute must likewise be intentionally configured.
+# No rbac: section: the gateway has NO Kubernetes API permissions.

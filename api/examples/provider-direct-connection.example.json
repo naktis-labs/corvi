@@ -1,33 +1,18 @@
 {
-  "version": "corvi.naktis.eu/connection/v1",
-  "mode": "providerDirect",
-  "revision": "example-generation-43",
-  "identity": {
-    "id": "unserved",
-    "address": "alerts@example.test"
-  },
-  "capabilities": [
-    "mail:messages:send"
-  ],
-  "services": {
-    "smtp": {
-      "host": "smtp.example.test",
-      "port": 587,
-      "tls": {
-        "mode": "starttls",
-        "serverName": "smtp.example.test"
-      }
-    }
-  },
-  "auth": {
-    "smtp": {
-      "type": "app_password",
-      "username": "alerts@example.test",
-      "secret": "REDACTED-EXAMPLE-PROVIDER-APP-PASSWORD"
-    }
-  },
-  "sender": {
-    "fromAddress": "alerts@example.test",
-    "envelopeFrom": "alerts@example.test"
-  }
+  "CONNECTION_SHAPE": "smtp",
+  "CONNECTION_MODE": "providerDirect",
+  "AUTH_TYPE": "smtp_password",
+  "CREDENTIAL_GRANULARITY": "providerMailbox",
+  "PROVIDER_NAME": "administration-only",
+  "CREDENTIAL_REVISION": "example-revision-43",
+  "MAILBOX_NAME": "unserved-mailbox",
+  "SMTP_HOST": "smtp.provider.example.test",
+  "SMTP_PORT": "587",
+  "SMTP_TLS_MODE": "starttls",
+  "SMTP_SERVER_NAME": "smtp.provider.example.test",
+  "SMTP_AUTH_MECHANISM": "PLAIN",
+  "SMTP_USERNAME": "alerts@example.test",
+  "SMTP_PASSWORD": "REDACTED-EXAMPLE-PROVIDER-APP-PASSWORD",
+  "SMTP_FROM_ADDRESS": "alerts@example.test",
+  "SMTP_ENVELOPE_FROM": "alerts@example.test"
 }

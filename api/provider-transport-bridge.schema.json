@@ -12,7 +12,7 @@
   "properties": {
     "apiVersion": {
       "type": "string",
-      "const": "corvi.naktis.dev/v1alpha1"
+      "const": "corvi.naktis.eu/v1alpha1"
     },
     "kind": {
       "type": "string",

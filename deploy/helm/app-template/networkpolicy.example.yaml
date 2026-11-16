@@ -1,0 +1,48 @@
+# Illustrative baseline only. Requires a CNI enforcing NetworkPolicy.
+# Namespace, CoreDNS pod labels and DNS location MUST be verified for each cluster.
+# These NetworkPolicies are not sufficient to operate Corvi until the exact
+# required gateway, provider, database, OAuth, API-server and metric paths
+# have separately been allowlisted. Never add unrestricted Internet egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: corvi-deny-all
+  namespace: corvi-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: corvi-allow-dns-only
+  namespace: corvi-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        # Example for clusters with CoreDNS in kube-system and k8s-app=kube-dns.
+        # Replace selectors with validated cluster-specific trusted selectors.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+# Further policies must use role-specific pod selectors and trusted namespace
+# labels. Native NetworkPolicy cannot directly restrict DNS/FQDN upstreams.
+# Choose a CNI FQDN policy, egress gateway/proxy, or reviewed bounded
+# IPv4/IPv6 IPBlock allowlists; protect against IP drift and DNS rebinding.
+# Add explicit Kubernetes API egress ONLY for the operator, never gateway.
+# NetworkPolicy does not secure node-local/modeled hostNetwork endpoints by
+# itself on all CNIs: test metadata/host-network isolation separately.

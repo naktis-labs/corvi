@@ -35,8 +35,9 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 ## Proposed public API specifications
 
 - **[OpenAPI 3.1 REST contract](api/openapi.yaml):** Versioned `/v1` endpoints, JSON schemas, permission annotations and error responses.
-- **[MCP 2026-07-28 specification](docs/spec/mcp.md):** Transport, OAuth resource-server behavior, tool mappings, filtering, **MRTR approval for sending**, **scoped inbox-change subscriptions**, **opt-in durable Tasks**, and conformance rules.
+- **[MCP 2026-07-28 specification](docs/spec/mcp.md):** Transport, OAuth resource-server behavior, tool mappings, filtering, **MRTR approval for sending**, **scoped inbox-change subscriptions**, **read-only context resources**, **opt-in durable Tasks**, and conformance rules.
 - **[Machine-readable MCP tool catalogue](api/mcp-tools.json):** Seven proposed tools with JSON Schema input/output definitions.
+- **[Machine-readable MCP resource catalogue](api/mcp-resources.json):** Read-only server context, authorized identities, safe policy guidance, per-identity context, and filtered inbox-change resources, with JSON Schemas and permission requirements.
 
 All public API specifications are **proposed, not implemented**. The agent-facing MCP `SKILL.md` is a planned deliverable that will be maintained alongside the implemented tool contract.
 

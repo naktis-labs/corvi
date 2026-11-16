@@ -22,6 +22,8 @@ Examples include allowing an agent to read one email alias, a selected conversat
 
 This goal is about privacy, consent, policy enforcement, auditable access, and revocation.
 
+**Agent usability deliverable:** The email-first MCP server should ship with an agent-consumable skill (`SKILL.md`, with examples and supporting documentation) explaining connection/authentication, tool discovery, identity and permission scopes, safe read/search workflows, filtered/hidden results, and send/confirmation expectations. Keep the skill versioned with the MCP tool contract, validate examples against the implementation, and never treat a skill as a replacement for server-side enforcement.
+
 Future connectors may support SMS, Matrix, Discord, and other systems **only where a legitimate, authorized integration supports the requested access**. This is not an authorization to circumvent provider restrictions, obtain unrestricted access to personal accounts, or claim per-message guarantees that the upstream platform cannot deliver.
 
 ### Goal B: Declarative automated mailbox management

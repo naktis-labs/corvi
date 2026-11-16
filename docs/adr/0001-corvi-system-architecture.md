@@ -41,7 +41,7 @@ No component may silently add a hard dependency on another optional component.
 The data plane implements:
 
 - REST and MCP mail APIs; SMTP AUTH submission for legacy applications.
-- Authentication and per-request authorization against the active local policy snapshot.
+- Authentication and per-request authorization against the active local policy snapshot. **Corvi is an OAuth protected resource server** for REST/MCP and may also host an optional OAuth authorization server; all identity grants are owned and enforced by Corvi, even when login is federated through an external OIDC provider (ADR-0009).
 - Virtual mail identities, mailbox/alias scoping, sender validation, content filtering, and attachment safeguards.
 - Provider-neutral IMAP/JMAP readers and SMTP/JMAP submitters with verified TLS and common access/filtering rules.
 - Optional mailbox synchronization, indexing, events, durable outbound queue, and operational audit state.
@@ -59,6 +59,7 @@ The control plane implements:
 - Provider discovery, administrative reconciliation, and per-mailbox transport resolution.
 - Validation and normalization of plugin responses into provider-neutral configuration.
 - Issuance, configuration, and revocation of scoped gateway credentials.
+- **Corvi-facing OAuth authorization:** interactive client authorization/consent (Authorization Code + PKCE), limited service principals (Client Credentials), client registration (CIMD and preregistration), per-MailIdentity grants, refresh/revocation and trusted external OIDC federation, without mixing provider OAuth tokens (ADR-0009).
 - **Provider-side interactive OAuth onboarding** through an authorized administrative flow, with PKCE, provider consent, protected upstream token handoff/refresh and explicit account binding. Client→Corvi authorization is separate; see [ADR-0008](0008-interactive-upstream-oauth.md).
 - Publication and rollback of complete, versioned configuration snapshots.
 - Reconciliation status, drift detection, provider-level usage and health coordination.
@@ -140,7 +141,7 @@ A MailIdentity specifies:
 - Permitted From and SMTP envelope-sender identities.
 - The policies and credentials that may act on its behalf.
 
-A **MailCredential** references **one or more explicitly permitted identities**, each with its own applicable action grants and policies. This includes identities on **distinct physical mailboxes and upstream providers**, all usable by **one MCP/REST access token** without reconnecting or authenticating separately per mailbox. Requests explicitly select an `identityId`, and Corvi resolves its backing mailbox from trusted configuration; permissions and disclosure policies are never unioned across identities. A credential granting read on identity A and send on identity B does not grant send on A or read on B. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions per identity. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
+A **MailCredential** references **one or more explicitly permitted identities**, each with its own applicable action grants and policies. An OAuth grant is **bound to an authenticated principal, specific OAuth client, Corvi mail-resource audience, current grant revision and individually consented identity/action sets**. OAuth scopes alone cannot authorize an identity; only the intersection of token claims, approved grant and current MailPolicy can authorize a call. (See ADR-0009.) This includes identities on **distinct physical mailboxes and upstream providers**, all usable by **one MCP/REST access token** without reconnecting or authenticating separately per mailbox. Requests explicitly select an `identityId`, and Corvi resolves its backing mailbox from trusted configuration; permissions and disclosure policies are never unioned across identities. A credential granting read on identity A and send on identity B does not grant send on A or read on B. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions per identity. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
 
 ### 4.2 Provable alias isolation
 
@@ -172,7 +173,7 @@ Provider forwarding, rewriting, catchalls, delegation and other upstream deliver
 - The control plane may get provider admin credentials and temporary provider OAuth **onboarding** tokens for a strictly authorized account-connection flow, but must not gain unbounded access to message content. Ordinary configuration snapshots must not contain raw OAuth access or refresh tokens.
 - External provider plugins run with minimal filesystem, network and Kubernetes permissions; restrict egress to their intended provider endpoints where practicable.
 - OCI images should be digest-pinned, scanned, and deployable with restrictive security contexts.
-- Split administrative APIs from public mail APIs; protect internal configuration publication with strong authentication and independent authorization.
+- Split administrative APIs from public mail APIs; protect internal configuration publication with strong authentication and independent authorization. Separate **mail-resource** and **administration** OAuth audiences: a mail OAuth token cannot manage upstream provider OAuth grants, provider mailboxes or administrative secrets. See [ADR-0009](0009-corvi-oauth-and-identity-grants.md).
 - Log privileged mutations and revocations; avoid storing full message bodies or secrets in administrative audit logs.
 
 ## 5. Mail APIs and operational semantics
@@ -349,7 +350,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 1. **Foundations:** Repository structure, provider-neutral config model, policy engine, built-in IMAP/SMTP transport, single-process REST/MCP/SMTP listeners.
    - Specify REST and MCP public contracts and ship a maintained **agent-facing MCP skill** (`SKILL.md`, examples and usage/safety guidance) once the MCP tools are implemented; test the skill against the actual server rather than documenting speculative tool names.
-2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification.
+2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification. Implement Corvi OAuth identity grants and login/consent/token flows (ADR-0009); the issuer can be embedded or federate with a trusted external OIDC login.
 3. **Native JMAP:** Implement RFC 8620 Session/capability discovery, JMAP mail reader, attachment reader, filtered synchronization and JMAP submission. Test Fastmail and mixed IMAP/JMAP identities without extending public REST/MCP methods (ADR-0007).
    - **Provider OAuth:** Implement interactive Authorization Code + PKCE, safe local/hosted callbacks and provider-specific registration, encrypted token custody and refresh; then connect JMAP and IMAP/SMTP OAuth mechanisms (ADR-0008).
 4. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
@@ -360,7 +361,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 ## 13. Architectural invariants to test in CI
 
-- A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector.
+- A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
 - Rejected config snapshots preserve the previous valid generation; partial rollouts are reported.
@@ -385,7 +386,7 @@ These are deliberately left for follow-up ADRs rather than assumed settled:
 
 - Exact protobuf messages, schema compatibility/version migration and per-capability error models.
 - Snapshot persistence and transport (file, pushed gRPC, or another authenticated publication channel); reload atomicity across large fleets.
-- Credential custody, encrypted secret-at-rest implementation, rotation and emergency revocation distribution. **Provider OAuth browser/CLI consent, PKCE, issuer/redirect safeguards, token refresh/rotation and independent client/connection revocation** follow [ADR-0008](0008-interactive-upstream-oauth.md).
+- Credential custody, encrypted secret-at-rest implementation, rotation and emergency revocation distribution. Corvi's own OAuth issuer/RAR grant store, CIMD, client consent, refresh-token rotation, external OIDC federation and access-token revocation are specified in [ADR-0009](0009-corvi-oauth-and-identity-grants.md), separate from upstream provider OAuth in ADR-0008. **Provider OAuth browser/CLI consent, PKCE, issuer/redirect safeguards, token refresh/rotation and independent client/connection revocation** follow [ADR-0008](0008-interactive-upstream-oauth.md).
 - Provider extension fields and admission/defaulting strategy in CRDs.
 - Exact trusted recipient provenance mechanisms achievable with Migadu; criteria for verified isolation.
 - State backend for optional queue/index/synchronizer and cross-replica ownership.

@@ -34,10 +34,10 @@ Example proposed plugin annotations:
 
 ```yaml
 annotations:
-  dev.naktis.corvi.provider.metadata-version: "v1"
-  dev.naktis.corvi.provider.transport-topology: "local-bridge"
-  dev.naktis.corvi.provider.bridge-mode: "required"
-  dev.naktis.corvi.provider.discovery-protocol: "corvi.provider.v1"
+  eu.naktis.corvi.provider.metadata-version: "v1"
+  eu.naktis.corvi.provider.transport-topology: "local-bridge"
+  eu.naktis.corvi.provider.bridge-mode: "required"
+  eu.naktis.corvi.provider.discovery-protocol: "corvi.provider.v1"
 ```
 
 The annotations convey **that** an adapter requires an ancillary bridge, not its unrestricted execution plan. They comply with OCI's ordinary namespaced string-key/string-value annotation format. The exact annotation namespace remains provisional until the code/schema is published.
@@ -57,7 +57,7 @@ The operator may pre-fetch OCI metadata without running the provider plugin, but
 The provider-plugin capability schema and operator reconciliation model are extended with an **optional bridge dependency**. Provisional example, intentionally independent of Kubernetes Pod types:
 
 ```yaml
-apiVersion: corvi.naktis.dev/v1alpha1
+apiVersion: corvi.naktis.eu/v1alpha1
 kind: ProviderTransportDependency
 transport:
   topology: localBridge

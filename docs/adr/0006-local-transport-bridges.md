@@ -86,6 +86,8 @@ transport:
 
 The example image/repository and fields are **illustrative**, not a published official Proton Bridge container or a usable deployment. Do not assume upstream has an official unattended, headless image. The bridge descriptor may be a typed protobuf message from discovery, backed by verified OCI data for pre-run inspection; its final protobuf and CRD schemas are a separate implementation deliverable.
 
+A proposed [JSON Schema for this dependency descriptor](../../api/provider-transport-bridge.schema.json) is included for schema-driven validation and future code generation. It captures required fields and basic managed-vs-existing constraints, but **passing the schema does not authorize runtime execution**, credential access or endpoints; the administrator-approved install and transport trust checks above are still mandatory.
+
 Rules:
 
 - **No arbitrary execution by OCI annotation.** The controller must apply an explicit install policy (approved repository/digest or trusted signature identity, allowed platform and executable, bounded resources, allowed network, Pod security policy and consent to any requested secret). It must not accept unqualified `latest` references or arbitrarily supplied host paths, extra containers, environment variables containing credentials, network exposure, privileged security contexts or extra Kubernetes permissions.

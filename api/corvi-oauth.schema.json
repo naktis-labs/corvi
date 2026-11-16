@@ -1,0 +1,601 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/corvi-oauth/v1alpha1",
+  "title": "Corvi client OAuth authorization and identity grant schema (proposed)",
+  "description": "Illustrative Corvi OAuth authorization server/resource-server settings and custom RAR per-MailIdentity grants. This is a design contract, NOT implemented runtime configuration, provider OAuth grant, OAuth token wire schema or a new public mail endpoint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "oauth"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.eu/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "CorviOAuthConfiguration"
+    },
+    "oauth": {
+      "$ref": "#/$defs/oauthConfig"
+    },
+    "clients": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/clientRegistration"
+      },
+      "uniqueItems": true
+    },
+    "grants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/persistedGrant"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "oauthConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "integrated",
+            "externalResourceServer",
+            "brokerWithOidc"
+          ]
+        },
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "description": "Stable trusted issuer; changes invalidate client credentials and grants."
+        },
+        "resource": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "description": "Canonical Corvi mail resource indicator, shared by REST and MCP only when both truly use the same protection domain."
+        },
+        "adminResource": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "description": "Optional distinct administration API resource; must not equal mail resource."
+        },
+        "trustedExternalIssuers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "uniqueItems": true
+        },
+        "clientRegistration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clientIdMetadataDocuments": {
+              "type": "boolean"
+            },
+            "preRegisteredClients": {
+              "type": "boolean"
+            },
+            "legacyDynamicClientRegistration": {
+              "type": "boolean",
+              "default": false
+            },
+            "allowAnonymousRegistration": {
+              "type": "boolean",
+              "const": false
+            }
+          },
+          "required": [
+            "clientIdMetadataDocuments",
+            "preRegisteredClients",
+            "legacyDynamicClientRegistration",
+            "allowAnonymousRegistration"
+          ]
+        },
+        "accessTokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "type": "string",
+              "enum": [
+                "opaque",
+                "jwt"
+              ]
+            },
+            "lifetimeSeconds": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 86400
+            },
+            "serverSideGrantLookup": {
+              "type": "boolean",
+              "const": true
+            },
+            "refreshRotation": {
+              "type": "boolean",
+              "const": true
+            },
+            "persistentGrantStore": {
+              "type": "boolean",
+              "const": true
+            },
+            "signingKeyRef": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "Trusted signing key reference for JWT mode, not raw JWK private keys."
+            }
+          },
+          "required": [
+            "format",
+            "lifetimeSeconds",
+            "serverSideGrantLookup",
+            "refreshRotation",
+            "persistentGrantStore"
+          ]
+        },
+        "grantTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "authorization_code",
+              "refresh_token",
+              "client_credentials",
+              "urn:ietf:params:oauth:grant-type:device_code"
+            ]
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "allowedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "mail:identities:list",
+              "mail:messages:list",
+              "mail:messages:search",
+              "mail:messages:read",
+              "mail:attachments:read",
+              "mail:messages:send",
+              "mail:submissions:read",
+              "mail:messages:subscribe"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "mode",
+        "issuer",
+        "resource",
+        "clientRegistration",
+        "accessTokens",
+        "grantTypes",
+        "allowedScopes"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "integrated"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "grantTypes": {
+                "contains": {
+                  "const": "authorization_code"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "accessTokens": {
+                "properties": {
+                  "format": {
+                    "const": "jwt"
+                  }
+                },
+                "required": [
+                  "format"
+                ]
+              }
+            },
+            "required": [
+              "accessTokens"
+            ]
+          },
+          "then": {
+            "properties": {
+              "accessTokens": {
+                "required": [
+                  "signingKeyRef"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authorizationDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "corvi_mail"
+        },
+        "identityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Opaque, caller-discoverable Corvi MailIdentity ID; never an email/provider address."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "mail:identities:list",
+              "mail:messages:list",
+              "mail:messages:search",
+              "mail:messages:read",
+              "mail:attachments:read",
+              "mail:messages:send",
+              "mail:submissions:read",
+              "mail:messages:subscribe"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "constraints": {
+          "$ref": "#/$defs/constraints"
+        }
+      },
+      "required": [
+        "type",
+        "identityId",
+        "actions"
+      ],
+      "description": "Corvi-defined RFC 9396 authorization_details entry; not a stand-alone token, nor an industry-standard authorization_details type."
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipientDomains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 253,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "recipientAddresses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "email"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "unattendedSend": {
+          "type": "boolean",
+          "const": false,
+          "description": "A user RAR request cannot self-approve unattended automation. A separate privileged server policy can authorize it."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "maxMessagesPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      }
+    },
+    "grantSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "issuer",
+        "subject",
+        "clientId"
+      ]
+    },
+    "persistedGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "grantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "grantee": {
+          "$ref": "#/$defs/grantSubject"
+        },
+        "resource": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/authorizationDetail"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "consentSource": {
+          "type": "string",
+          "enum": [
+            "ownerInteractive",
+            "adminService",
+            "ownerPreapproved"
+          ]
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "revoked",
+            "expired",
+            "suspended"
+          ]
+        }
+      },
+      "required": [
+        "grantId",
+        "grantee",
+        "resource",
+        "details",
+        "consentSource",
+        "generation",
+        "status"
+      ]
+    },
+    "authorizationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authorization_details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/authorizationDetail"
+          },
+          "minItems": 1
+        },
+        "resource": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Space-delimited OAuth scope parameter; scopes must be matched to the allowed actions and intersection rules."
+        }
+      },
+      "required": [
+        "authorization_details"
+      ]
+    },
+    "clientRegistration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "Pre-registered ID or validated HTTPS CIMD client_id URL."
+        },
+        "clientType": {
+          "type": "string",
+          "enum": [
+            "public",
+            "confidential"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "redirectUris": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "grantTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "authorization_code",
+              "client_credentials",
+              "urn:ietf:params:oauth:grant-type:device_code"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "authentication": {
+          "type": "string",
+          "enum": [
+            "none",
+            "client_secret_basic",
+            "private_key_jwt",
+            "tls_client_auth"
+          ]
+        },
+        "secretRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Trusted secret reference, never raw client secret."
+        },
+        "allowedIdentityIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "allowedActions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "mail:identities:list",
+              "mail:messages:list",
+              "mail:messages:search",
+              "mail:messages:read",
+              "mail:attachments:read",
+              "mail:messages:send",
+              "mail:submissions:read",
+              "mail:messages:subscribe"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "clientId",
+        "clientType",
+        "grantTypes",
+        "authentication"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "clientType": {
+                "const": "public"
+              }
+            },
+            "required": [
+              "clientType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "authentication": {
+                "const": "none"
+              }
+            },
+            "not": {
+              "required": [
+                "secretRef"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "grantTypes": {
+                "contains": {
+                  "const": "client_credentials"
+                }
+              }
+            },
+            "required": [
+              "grantTypes"
+            ]
+          },
+          "then": {
+            "properties": {
+              "clientType": {
+                "const": "confidential"
+              },
+              "authentication": {
+                "not": {
+                  "const": "none"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "x-corvi-mcp": {
+    "standard": "2026-07-28",
+    "resourceDiscovery": "RFC 9728",
+    "authorizationServerMetadata": "RFC 8414",
+    "clientRegistrationPreference": "CIMD; preregistration; optional legacy DCR",
+    "authorizationModel": "RFC 9396 authorization_details with custom corvi_mail detail type; per-identity actions never union",
+    "scopes": [
+      "mail:identities:list",
+      "mail:messages:list",
+      "mail:messages:search",
+      "mail:messages:read",
+      "mail:attachments:read",
+      "mail:messages:send",
+      "mail:submissions:read",
+      "mail:messages:subscribe"
+    ],
+    "notes": "Provider OAuth remains ADR-0008 and never authenticates clients to Corvi."
+  }
+}

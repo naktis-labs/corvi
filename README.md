@@ -18,6 +18,7 @@ The key boundaries are:
 - **Optional control plane:** Provider configuration discovery, resource reconciliation, credential management and versioned configuration delivery. It is not in the message-processing path.
 - **Optional Kubernetes operator:** GitOps/CRD reconciliation and optional OCI provider plugin deployments.
 - **Provider plugins:** gRPC services for provider-specific transport resolution, administrative operations and upstream provider usage/health metrics. Migadu is the initial target.
+- **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
 - **Observability:** OpenTelemetry and Prometheus/OTLP, with provider plugins acting as exporters. TLS/mTLS is mandatory for internal gRPC, and Kubernetes may opportunistically use cert-manager's CSI driver.
 
 ## Design decisions
@@ -31,6 +32,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 **[ADR-0004: Pluggable policy evaluation with WASM and gRPC](docs/adr/0004-pluggable-grpc-policy-engines.md)** proposes sandboxed in-process WASM with **two OCI release variants** per policy: native WASM OCI (`-wasm`) for Corvi's embedded resolver, and Kubernetes image-volume-compatible OCI (`-volume`) for mounted policy files. Both variants contain identical WASM bytes and are pinned by their respective digests. External gRPC engines such as Cerbos remain optional, and the built-in evaluator is sufficient for standalone use.
 
 **[ADR-0005: Shared public mail API contract](docs/adr/0005-public-mail-api.md)** establishes consistent client-facing authorization, filtering, pagination, sending and idempotency semantics across REST and MCP.
+
+**[ADR-0006: Provider-managed local mail transport bridges](docs/adr/0006-local-transport-bridges.md)** specifies direct versus existing/managed bridge topology, OCI metadata-assisted discovery, validated runtime provisioning, local endpoint/TLS security and Proton Mail Bridge compatibility constraints.
 
 ## Proposed public API specifications
 

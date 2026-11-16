@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://corvi.naktis.eu/schemas/storage/v1alpha1",
   "title": "Corvi state and secret storage configuration (proposed)",
-  "description": "Design contract for Corvi standalone/HA relational persistence, secret custody, and optional encrypted blobs (ADR-0010). Not implemented. Backends do not confer permission to access data; separate application authorization is mandatory.",
+  "description": "Design contract for Corvi Kubernetes-native management storage (CRDs/status/Secrets/Leases), independent standalone/HA data-plane and OAuth issuer persistence, optional encrypted blobs (ADR-0010). Not implemented.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,6 +33,10 @@
     },
     "features": {
       "$ref": "#/$defs/features"
+    },
+    "controlPlane": {
+      "$ref": "#/$defs/controlPlane",
+      "description": "Optional management-only storage configuration, wholly separate from data-plane/OAuth SQL state."
     }
   },
   "allOf": [
@@ -732,6 +736,136 @@
         "multiReplica",
         "persistInboundMail"
       ]
+    },
+    "controlPlane": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "kubernetes",
+            "standaloneFile",
+            "disabled"
+          ],
+          "description": "Kubernetes mode does not require an operator SQL database."
+        },
+        "kubernetes": {
+          "type": "object",
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Namespace containing the Corvi management custom resources and approved secrets."
+            },
+            "leaderElectionLeaseName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253,
+              "description": "Optional Kubernetes Lease name for operator leader election."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "namespace"
+          ],
+          "description": "Kubernetes CRD spec/status, Secret references and Lease objects are authoritative. Do not create a SQL shadow database for management."
+        },
+        "standaloneFile": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ],
+          "description": "Standalone management desired-state file; no Kubernetes API required."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "kubernetes"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "kubernetes"
+            ],
+            "not": {
+              "required": [
+                "standaloneFile"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "standaloneFile"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "standaloneFile"
+            ],
+            "not": {
+              "required": [
+                "kubernetes"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "disabled"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "kubernetes"
+                  ]
+                },
+                {
+                  "required": [
+                    "standaloneFile"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   },
   "x-corvi-design-notes": {
@@ -743,6 +877,9 @@
     "references": [
       "docs/adr/0010-storage-and-durability.md",
       "docs/adr/0009-corvi-oauth-and-identity-grants.md"
-    ]
+    ],
+    "controlPlane": "In Kubernetes mode CRD spec/status, approved Secret references and Leases are the sole authoritative control-plane store; operator-only installs require neither SQLite nor PostgreSQL. Do not create shadow management SQL tables.",
+    "stateScope": "state.backend chooses data-plane and OAuth issuer transactional persistence only; never replaces Kubernetes operator reconciliation storage.",
+    "kubernetesSecrets": "Kubernetes Secret storage requires RBAC and configured at-rest encryption; not every operator has permission to read token or signing secrets."
   }
 }

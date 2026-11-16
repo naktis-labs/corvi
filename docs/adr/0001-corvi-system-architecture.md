@@ -27,7 +27,7 @@ The central design constraint is **strict data-plane/control-plane separation**.
 Corvi consists of independently deployable components:
 
 - **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads using native IMAP or JMAP, submits upstream via SMTP or JMAP, and owns optional operational state.
-- **Control plane:** Resolves provider settings, reconciles supported upstream resources, **supports privileged interactive provider OAuth connection onboarding**, issues/rotates gateway configuration and credentials, and publishes versioned snapshots. Optional for standalone deployments; a local CLI may complete an upstream OAuth grant when no controller is running.
+- **Control plane:** Resolves provider settings, reconciles supported upstream resources, **supports privileged interactive provider OAuth connection onboarding**, issues/rotates gateway configuration and credentials, and publishes versioned snapshots. In Kubernetes mode it persists management state **only via CRDs, status, Secrets references and Leases**, with **no control-plane database**. Optional for standalone deployments; a local CLI may complete an upstream OAuth grant when no controller is running.
 - **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
 - **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP or JMAP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
 - **Built-in generic transports:** IMAP, SMTP and JMAP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
@@ -64,7 +64,7 @@ The control plane implements:
 - Publication and rollback of complete, versioned configuration snapshots.
 - Reconciliation status, drift detection, provider-level usage and health coordination.
 
-Provider reconciliation and transport resolution are control-plane work; the data plane receives fully resolved endpoints and trusted credential references.
+Provider reconciliation and transport resolution are control-plane work; the data plane receives fully resolved endpoints and trusted credential references. **Kubernetes CRD spec/status is authoritative for provider-management state**, not an SQL registry or synchronized database copy. Corvi's integrated OAuth issuer may share an executable with a control-plane component, but its transactional OAuth grants/token families use the **separate OAuth state store**, not Kubernetes reconciliation state (ADR-0010).
 
 The control plane can be run without a data plane. This supports management-only installations, including managing Migadu domains and aliases without enabling mail access.
 
@@ -72,7 +72,7 @@ The control plane can be run without a data plane. This supports management-only
 
 The operator:
 
-- Watches CRDs and converts desired state into control-plane operations.
+- Watches CRDs and converts desired state into control-plane operations. Uses the Kubernetes API directly for provider management persistence, `status.conditions` and `observedGeneration` for status, `resourceVersion` for optimistic updates, finalizers for cleanup, and `Lease` objects for leader election; **no operator SQL database**.
 - Deploys and supervises OCI provider-plugin Deployments/Services, including discovery, readiness, configuration and lifecycle.
 - Generates or publishes normalized gateway configuration, and reports rollout status.
 - Configures mTLS certificate volumes and optional monitoring resources.
@@ -208,11 +208,11 @@ Multiple data-plane replicas may serve reads, but synchronization ownership/chec
 
 ### 5.4 State ownership
 
-**Storage backend choice:** [ADR-0010](0010-storage-and-durability.md) specifies `ephemeral` for the minimal configured gateway, **SQLite** on local persistent storage for standalone OAuth/queue/sync/tasks, and **PostgreSQL** for multi-replica coordination. Secret custody (upstream OAuth refresh, provider passwords, signing keys) is a separate encrypted store; optional object storage and cached inbound mail are opt-in, with filtering and retention safeguards.
+**Storage backend choice:** The **Kubernetes control plane uses Kubernetes itself (CRDs/status/Leases and approved Secret references), without SQLite/PostgreSQL**. [ADR-0010](0010-storage-and-durability.md) separately specifies `ephemeral` for the minimal mail gateway, **SQLite** on local persistent storage for standalone OAuth/queue/sync/tasks, and **PostgreSQL** for multi-replica OAuth/data-plane operational coordination. Secret custody (upstream OAuth refresh, provider passwords, signing keys) is a separate encrypted store; optional object storage and cached inbound mail are opt-in, with filtering and retention safeguards.
 
 Separate three categories:
 
-1. **Desired state:** GitOps/standalone files and control-plane reconciliation.
+1. **Desired state:** Kubernetes CRDs and status for operator deployments, or GitOps/standalone files for non-Kubernetes deployments; **no separate control-plane SQL store**.
 2. **Active configuration:** Immutable versioned snapshots consumed and persisted by the data plane.
 3. **Operational message state:** Queues, mailbox checkpoints, indexes, idempotency records and relevant delivery/audit events, owned by the data plane.
 
@@ -363,6 +363,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 ## 13. Architectural invariants to test in CI
 
+- A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state.
 - A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.

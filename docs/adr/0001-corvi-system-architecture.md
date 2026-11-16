@@ -8,7 +8,7 @@
 
 ## Context
 
-Corvi is an open-source, provider-agnostic mail gateway and management platform. Its initial integration target is Migadu, but it must work with an ordinary existing IMAP/SMTP mailbox without a provider management API, Kubernetes, or any extra container.
+Corvi is an open-source, provider-agnostic mail gateway and management platform. Its initial provider-management target is Migadu, but it must work with an ordinary IMAP/SMTP mailbox without a provider management API, Kubernetes, or any extra container. **Native JMAP** is a second first-class upstream mail access and submission protocol, initially validated against Fastmail; see [ADR-0007](0007-native-jmap-transport.md).
 
 The motivating use cases include:
 
@@ -26,11 +26,11 @@ The central design constraint is **strict data-plane/control-plane separation**.
 
 Corvi consists of independently deployable components:
 
-- **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads IMAP, submits SMTP, and owns optional operational state.
+- **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads using native IMAP or JMAP, submits upstream via SMTP or JMAP, and owns optional operational state.
 - **Control plane:** Resolves provider settings, reconciles supported upstream resources, issues and rotates gateway configuration/credentials, and publishes versioned configuration snapshots. Optional for standalone deployments.
 - **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
 - **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
-- **Built-in generic transport:** IMAP and SMTP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
+- **Built-in generic transports:** IMAP, SMTP and JMAP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
 
 No component may silently add a hard dependency on another optional component.
 
@@ -43,14 +43,14 @@ The data plane implements:
 - REST and MCP mail APIs; SMTP AUTH submission for legacy applications.
 - Authentication and per-request authorization against the active local policy snapshot.
 - Virtual mail identities, mailbox/alias scoping, sender validation, content filtering, and attachment safeguards.
-- Provider-neutral IMAP readers and SMTP clients with TLS enabled by default.
+- Provider-neutral IMAP/JMAP readers and SMTP/JMAP submitters with verified TLS and common access/filtering rules.
 - Optional mailbox synchronization, indexing, events, durable outbound queue, and operational audit state.
 - An independently operated telemetry endpoint/export pipeline.
 - A configuration-consumption interface, never an operator-specific webhook.
 
 The gateway **does not import Kubernetes APIs**, call provider management APIs in message-processing code, or require live plugin resolution when reading or sending mail.
 
-Corvi **does not expose downstream IMAP**. IMAP is an upstream protocol used by the data plane. SMTP is exposed only as a client submission/compatibility interface; it is not intended to be a general-purpose public MX server.
+Corvi **does not expose downstream IMAP or JMAP**. Both are upstream protocols used by the data plane. SMTP is exposed only as a client submission/compatibility interface; it is not intended to be a general-purpose public MX server.
 
 ### 1.2 Control plane
 
@@ -81,15 +81,15 @@ It must **not** be called synchronously to authorize a message or supply an IMAP
 
 External plugins are OCI images running gRPC servers. The **image** is the only mandatory plugin-specific deployment field; credentials and configuration are optional and provider-dependent. The operator deploys the plugin rather than requiring a separate user-managed HelmRelease.
 
-Plugins advertise capabilities. Three independently usable capability families are defined. **Transport topology** is an explicit capability within discovery/resolution: direct upstream IMAP/SMTP, existing local bridge, or managed local bridge. OCI image metadata can offer pre-deployment hints, but cannot automatically authorize arbitrary containers/secrets.
+Plugins advertise capabilities. Three independently usable capability families are defined. **Upstream protocol** (IMAP, SMTP, or JMAP) and **transport topology** (direct, or existing/managed bridge for IMAP/SMTP) are separate dimensions. Read and submission protocols are chosen independently. OCI image metadata can offer pre-deployment hints, but cannot automatically authorize arbitrary containers/secrets.
 
 1. **Discovery:** Protocol/capability negotiation, supported resource types, configuration schema and telemetry groups.
-2. **Transport resolution:** Return mailbox-specific IMAP and SMTP connection details, supported auth methods, explicit direct/bridge transport topology, verified bridge readiness where needed, and controlled secret references.
+2. **Transport resolution:** Return independent upstream read/submission protocol selections and mailbox-specific IMAP/SMTP endpoints or JMAP Session URL/account/capability descriptors, verified bridge readiness where needed, and controlled secret references.
 3. **Provider management:** Inspect/apply/delete the upstream resources the provider actually supports; return reconciled state and errors.
 
 Provider management is optional. A transport-only external plugin is valid. A management-only plugin is also valid if transport is not needed. For an external managed provider (such as Migadu), the plugin provides the IMAP/SMTP configuration; the gateway should not hard-code provider hostnames or protocol quirks.
 
-The built-in **generic IMAP/SMTP** implementation is not an OCI plugin or another container. It uses direct configuration and in-process Rust calls, and can run without gRPC.
+The built-in **generic IMAP/SMTP and native JMAP** implementations are not OCI plugins or additional containers. It uses direct configuration and in-process Rust calls, and can run without gRPC.
 
 Provider implementations must not depend on the Kubernetes API or assume they are deployed in a cluster. External providers may be used by a standalone control plane through a configured gRPC endpoint.
 
@@ -104,7 +104,7 @@ Use Protocol Buffers and gRPC, with versioned packages, such as:
 
 Provider operations are control-plane RPCs. **No provider RPC is required in the data-plane hot path.** The standalone data plane can load the same normalized schema directly from a file.
 
-Transport resolution returns separate IMAP and SMTP endpoints, TLS modes, authentication mechanisms/usernames, and trusted references to credentials. It can include a revision/expiry so the control plane can refresh the result. IMAP and SMTP may have different credentials or endpoints. **Some providers require a local proxy/bridge**; discover its requirement from typed OCI metadata hints plus authenticated `GetCapabilities`, then publish validated local transport settings only after bridge initialization. The bridge is a lifecycle dependency, not a provider RPC on the data-plane request path. [ADR-0006](0006-local-transport-bridges.md) specifies deployment and trust requirements.
+Transport resolution returns independently selected read and submission transports, their endpoints, TLS modes, account bindings, authentication mechanisms and trusted credential references. JMAP includes HTTPS Session discovery, account capability validation and optional sender Identity binding. It can include a revision/expiry so the control plane can refresh the result. IMAP and SMTP may have different credentials or endpoints. **Some providers require a local proxy/bridge**; discover its requirement from typed OCI metadata hints plus authenticated `GetCapabilities`, then publish validated local transport settings only after bridge initialization. The bridge is a lifecycle dependency, not a provider RPC on the data-plane request path. [ADR-0006](0006-local-transport-bridges.md) specifies deployment and trust requirements.
 
 Plugin-supplied secret identifiers are untrusted input. They must be mapped through a control-plane-owned allowlist and never treated as arbitrary Kubernetes Secret names, paths, or requests for secret access. Never return plaintext credentials in transport descriptors. Upstream credential provisioning, where a provider API can generate a secret only once, requires a dedicated narrow secret-handoff flow.
 
@@ -122,7 +122,7 @@ Configuration is expressed as a **provider-neutral versioned snapshot** containi
 - Support a standalone YAML/file configuration path without requiring gRPC.
 - Do not embed plaintext secrets in ordinary snapshot/log/telemetry payloads.
 
-**Failure invariant:** Existing authorized mail access continues if the operator, provider plugin, Kubernetes API, or control plane becomes unavailable, subject to configured expiry/staleness limits. A failed plugin refresh never downgrades IMAP/SMTP security or silently relaxes policy.
+**Failure invariant:** Existing authorized mail access continues if the operator, provider plugin, Kubernetes API, or control plane becomes unavailable, subject to configured expiry/staleness limits. A failed plugin refresh never downgrades IMAP/SMTP/JMAP security, silently changes protocols or relaxes policy.
 
 Revocation is only immediately effective on replicas that have received the new configuration (or a separately authenticated emergency revocation update). Short-lived credentials and revocation propagation monitoring mitigate that unavoidable offline tradeoff. Critical authorization should be rechecked when queued operations execute, not just when first accepted.
 
@@ -153,7 +153,7 @@ Define explicit isolation modes:
 
 Require verified provenance for strong multi-tenant guarantees; never silently downgrade verified to bestEffort. Isolation must apply to reads, search, pagination, counts, threads, unread metadata, event streams, attachment URLs, sent-mail access and indexes. Cross-identity information leaks through counts or search timing are in scope.
 
-Outbound SMTP submission must authenticate a credential and enforce both From headers and SMTP MAIL FROM/envelope sender. Server-side policy determines whether identity delegation or alternate senders are permitted.
+Outbound submission must authenticate a credential and enforce both From headers and SMTP/JMAP envelope sender, as well as validated upstream JMAP Identity binding where applicable. Server-side policy determines whether identity delegation or alternate senders are permitted.
 
 ### 4.3 Sensitive mail, content and attachment handling
 
@@ -178,26 +178,29 @@ Provider forwarding, rewriting, catchalls, delegation and other upstream deliver
 
 ### 5.1 Client APIs
 
-Expose provider-neutral REST and MCP operations for mail listing, reading, searching, threading, structured metadata, attachments, sending and supported mutations. Use stable gateway-visible message identifiers and cursor-based pagination instead of leaking raw IMAP concepts.
+Expose provider-neutral REST and MCP operations for mail listing, reading, searching, threading, structured metadata, attachments, sending and supported mutations. Use stable gateway-visible message identifiers and cursor-based pagination instead of leaking raw IMAP or JMAP identifiers.
 
 **Public API specification:** [ADR-0005](0005-public-mail-api.md), [OpenAPI 3.1](../../api/openapi.yaml) and the [MCP 2026-07-28 contract](../spec/mcp.md) define the proposed initial subset. The MCP server additionally exposes bounded, caller-authorized **read-only context resources** (server overview, authorized identities, safe policy guidance, and per-identity context) plus visible-mail revision resources. These are not new routes to raw email or administrative data. In v1, conversation/thread grouping may be represented by an opaque ID, but separate conversation browsing, message mutations and event streaming remain deferred until their permission and filtering semantics are specified.
 
-SMTP submission is a legacy compatibility listener with per-identity SMTP AUTH and strict server-side sender enforcement. It is not a second authorization system.
+SMTP submission is a legacy compatibility listener with per-identity SMTP AUTH and strict server-side sender enforcement. It is not a second authorization system; it may submit upstream via SMTP **or JMAP**.
 
 For application integrations, optionally support SSE/webhook notifications and MCP-compatible notifications for message-received, message-changed and delivery-status events. Public application webhooks are distinct from Kubernetes admission webhooks and from internal gRPC.
 
-### 5.2 SMTP delivery
+### 5.2 Upstream submission and delivery
 
-Support independently selectable modes:
+Select upstream SMTP, JMAP, or disabled submission independently of the read protocol. JMAP submission uses authorized `Identity/get`, `Email/set` and `EmailSubmission/set`; the public REST/MCP contract stays unchanged. Modes below apply to both upstream protocols:
 
-- **Direct relay (minimum deployment):** Relay to upstream SMTP and acknowledge successful acceptance only after upstream acceptance. No durable local queue is mandatory.
+
+- **Direct submission (minimum deployment):** Submit upstream to SMTP or JMAP and acknowledge successful acceptance only after upstream acceptance. No durable local queue is mandatory.
 - **Durable queued submission (optional):** Persist before acknowledging receipt, retry safely with backoff, track delivery state, and keep the queue in the data plane.
 
-Once Corvi accepts responsibility for a queued message, it must retain sufficient durable state to retry or surface failure. REST/MCP sends should support idempotency keys and explicit queued/submitted/failed/unknown statuses. Exactly-once delivery cannot be guaranteed in the presence of ambiguous upstream SMTP outcomes.
+Once Corvi accepts responsibility for a queued message, it must retain sufficient durable state to retry or surface failure. REST/MCP sends should support idempotency keys and explicit queued/submitted/failed/unknown statuses. Exactly-once delivery cannot be guaranteed in the presence of ambiguous SMTP **or JMAP** outcomes. JMAP creation IDs are not durable Corvi idempotency keys; uncertain JMAP sends must never trigger automatic SMTP fallback.
 
-### 5.3 IMAP and message state
+### 5.3 IMAP/JMAP and message state
 
 Implement upstream IMAP connection pooling and incremental synchronization where enabled. Identify upstream messages by account + folder + UIDVALIDITY + UID, not by untrusted Message-ID headers. Use IDLE and CONDSTORE/QRESYNC when advertised, with polling/fallback reconciliation.
+
+For native JMAP, use authenticated RFC 8620 Session and account selection, JMAP `Email/query`, `Email/get`, `Email/changes`/`Email/queryChanges` and bounded blobs. JMAP account/Email/Thread/state identifiers stay internal; all public metadata/search/events are filtered first. JMAP `Mailbox` means a folder/label, not a physical Corvi Mailbox. See [ADR-0007](0007-native-jmap-transport.md).
 
 Multiple data-plane replicas may serve reads, but synchronization ownership/checkpoints should be coordinated (leases/fencing), preventing concurrent writers from corrupting state. Event and index semantics must honor isolation and deletions/moves/expunges.
 
@@ -217,7 +220,7 @@ The optional operator exposes these provisional API concepts, with names and fie
 
 | Resource | Purpose |
 | --- | --- |
-| **MailProvider** | Provider instance, built-in transport settings or OCI plugin image, optional managed/existing local transport bridge, admin configuration, credentials, capability status |
+| **MailProvider** | Provider instance, built-in IMAP/SMTP/JMAP transport settings or OCI plugin image, optional managed/existing IMAP/SMTP bridge, admin configuration, credentials, capability status |
 | **MailDomain** | Upstream domain lifecycle and provider reference |
 | **MailDomainPolicy** | Spam, catchall, quota defaults, protocol/security controls and other supported domain settings |
 | **Mailbox** | Physical upstream mailbox, provider reference, lifecycle and credential bindings |
@@ -233,7 +236,7 @@ The optional operator exposes these provisional API concepts, with names and fie
 
 For **MailProvider**:
 
-- A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP connection parameters come from user configuration.
+- A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP **or native JMAP** transport settings come from user configuration and the proposed [transport schema](../../api/mail-transport.schema.json).
 - An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics. Provider images may declare a **local bridge dependency** via OCI annotations/typed descriptor; the controller verifies metadata against trusted gRPC discovery and administrator-approved image/runtime policy before deploying a bridge.
 - If provider administration is enabled but the gateway is disabled, the operator still reconciles domains/mailboxes/aliases/etc.
 - If only transport is configured, Corvi must not attempt provider administration.
@@ -242,7 +245,7 @@ CRDs must not copy provider API objects wholesale. Generic resource schemas shou
 
 ### 6.1 Migadu initial adapter
 
-The Migadu plugin is the initial external provider implementation. Its planned administrative and telemetry surface includes, **subject to API capability detection and validation**:
+The Migadu plugin is the initial external provider-management implementation. **Native Fastmail JMAP** is an independent mail protocol interoperability target, not evidence of a general Fastmail domain/mailbox provisioning API. Its planned administrative and telemetry surface includes, **subject to API capability detection and validation**:
 
 - Domains: list/get/create/update, configuration, spam/catchall/defaults, DNS record guidance and activation/diagnostic status, usage where exposed.
 - Mailboxes: lifecycle, passwords/secret rotation, usage, per-mailbox limits, delegations, protocol access and expiration where available.
@@ -324,7 +327,7 @@ Kubernetes deployments independently scale gateway, controller/operator and prov
 
 - **Operator webhook on the data-path:** rejected; creates availability coupling to Kubernetes infrastructure.
 - **Mandatory OCI plugin for generic IMAP/SMTP:** rejected; unnecessary process/container for the basic use case.
-- **Gateway querying provider RPC for each mail operation:** rejected; transport resolution belongs to configuration/control plane.
+- **Gateway querying provider RPC for each mail operation:** rejected; transport resolution belongs to configuration/control plane. Native JMAP is an in-process standard protocol client and does not require a provider RPC in the mail hot path.
 - **REST webhooks as provider plugin protocol:** rejected in favor of versioned protobuf/gRPC.
 - **Provider-specific mail transport built into the gateway:** rejected; upstream variations belong to provider resolver or generic config.
 - **Mandatory cert-manager, trust-manager, ServiceMonitor or collector for standalone use:** rejected; infrastructure integrations must remain optional.
@@ -335,7 +338,7 @@ Kubernetes deployments independently scale gateway, controller/operator and prov
 
 The strict boundary improves resilience, auditability, least privilege and portability, at the cost of designing a robust configuration snapshot schema and reliable revocation propagation.
 
-Provider plugins increase interoperability but introduce an untrusted executable supply chain and separate compatibility/versioning concerns. They must be sandboxed and capability-tested. Bridge-backed providers add local application state, account enrollment, key/certificate management, and colocated network topology; OCI metadata only suggests prerequisites and never grants runtime or secret privileges.
+Provider plugins increase interoperability but introduce an untrusted executable supply chain and separate compatibility/versioning concerns. Native JMAP adds HTTP/JSON session, account and token lifecycle, synchronization, endpoint trust and submission state complexity; it is not a provider plugin. They must be sandboxed and capability-tested. Bridge-backed providers add local application state, account enrollment, key/certificate management, and colocated network topology; OCI metadata only suggests prerequisites and never grants runtime or secret privileges.
 
 Verified alias isolation is not achievable for all arbitrary IMAP inboxes without a trusted delivery provenance signal; some installations must use dedicated mailboxes or explicitly accept bestEffort behavior.
 
@@ -346,11 +349,12 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 1. **Foundations:** Repository structure, provider-neutral config model, policy engine, built-in IMAP/SMTP transport, single-process REST/MCP/SMTP listeners.
    - Specify REST and MCP public contracts and ship a maintained **agent-facing MCP skill** (`SKILL.md`, examples and usage/safety guidance) once the MCP tools are implemented; test the skill against the actual server rather than documenting speculative tool names.
 2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification.
-3. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
-4. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.
+3. **Native JMAP:** Implement RFC 8620 Session/capability discovery, JMAP mail reader, attachment reader, filtered synchronization and JMAP submission. Test Fastmail and mixed IMAP/JMAP identities without extending public REST/MCP methods (ADR-0007).
+4. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
+5. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.
    - **Bridge compatibility path:** Add the typed provider topology/OCI metadata and local-bridge resolver contract, then test an existing bridge before implementing optional managed-bridge lifecycle or a Proton adapter (see ADR-0006).
-5. **Kubernetes operator:** CRDs, provider Deployment lifecycle, cert-manager CSI/Certificate negotiation, GitOps reconciliation and status.
-6. **Scale/operability:** Durable optional queue, IMAP synchronization, events/indexes, multi-replica coordination, telemetry/alerts.
+6. **Kubernetes operator:** CRDs, provider Deployment lifecycle, cert-manager CSI/Certificate negotiation, GitOps reconciliation and status.
+7. **Scale/operability:** Durable optional queue, IMAP synchronization, events/indexes, multi-replica coordination, telemetry/alerts.
 
 ## 13. Architectural invariants to test in CI
 
@@ -365,7 +369,8 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - SMTP AUTH cannot impersonate unauthorized header From or envelope senders.
 - Sensitive message content cannot reach client-visible indexes or notifications before policy enforcement.
 - Queued SMTP acknowledgment requires persistence; direct-relay acknowledgment requires upstream acceptance.
-- Mailbox synchronization handles UIDVALIDITY changes, moves, deletes and concurrent workers.
+- Mailbox synchronization handles IMAP UIDVALIDITY changes and JMAP state invalidation, moves, deletes and concurrent workers.
+- Native JMAP transports work with no controller/plugin/Kubernetes, validate Session URLs/account capabilities, use the same disclosure filters as IMAP, and never automatically fall back to SMTP after ambiguous JMAP sends.
 - Scraping metrics never triggers upstream API calls; metrics/OTLP outages do not block provisioning or mail operations.
 - Provider usage metrics report unavailable quotas as unsupported, not fabricated.
 - OCI provider bridge requirements cannot deploy untrusted containers or request arbitrary secrets; bridge capability discovery is validated against administrator-approved runtime profiles.

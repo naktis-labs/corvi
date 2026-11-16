@@ -95,7 +95,7 @@ The engine should return an internal reason code and matched rule IDs for diagno
 The exact CRD fields are provisional; this shows intended behavior rather than a committed Kubernetes API. The same normalized model must be usable from a standalone configuration file.
 
 ```yaml
-apiVersion: mail.corvi.dev/v1alpha1
+apiVersion: mail.corvi.naktis.eu/v1alpha1
 kind: MailFilterPolicy
 metadata:
   name: agent-safe-inbox
@@ -141,7 +141,7 @@ spec:
 Example association to an action policy:
 
 ```yaml
-apiVersion: mail.corvi.dev/v1alpha1
+apiVersion: mail.corvi.naktis.eu/v1alpha1
 kind: MailPolicy
 metadata:
   name: agent-mail-read

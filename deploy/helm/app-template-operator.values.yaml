@@ -77,6 +77,7 @@ rbac:
         - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
           # Illustrative plural kinds; finalize when CRDs are generated.
           resources:
+            - corvigateways
             - mailproviders
             - maildomains
             - maildomainpolicies
@@ -91,6 +92,7 @@ rbac:
           verbs: [get, list, watch]
         - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
           resources:
+            - corvigateways/status
             - mailproviders/status
             - maildomains/status
             - mailboxes/status
@@ -100,12 +102,13 @@ rbac:
           verbs: [get, patch, update]
         - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
           resources:
+            - corvigateways/finalizers
             - mailproviders/finalizers
             - maildomains/finalizers
             - mailboxes/finalizers
           verbs: [update]
         - apiGroups: [apps]
-          resources: [deployments]
+          resources: [deployments, statefulsets]
           verbs: [get, list, watch, create, update, patch, delete]
         - apiGroups: [""]
           resources: [services, configmaps]
@@ -145,7 +148,10 @@ persistence:
 # Runtime needs a Kubernetes API egress exception and DNS; require
 # default-deny NetworkPolicies, not an unrestricted 0.0.0.0/0 or ::/0.
 # CRDs are installed separately with elevated GitOps/installer authority.
-# IMPORTANT: create/patch Deployments is powerful even with narrow RBAC:
+# IMPORTANT: create/patch Deployments/StatefulSets is powerful even with narrow RBAC:
 # an admission policy MUST constrain generated Pod specs and allowed SAs.
+# CorviGateway (ADR-0012) uses these permissions only when the operator
+# owns the gateway instance. Helm-direct gateway Deployments are never adopted.
+# Gateway workload SAs must be provisioned separately and mount no API token.
 # The operator owns no SQL database, no provider secrets by default, and
 # must reject unsafe plugin or bridge images before creating Pods.

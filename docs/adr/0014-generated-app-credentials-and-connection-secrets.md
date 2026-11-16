@@ -53,30 +53,39 @@ The generated Kubernetes Secret is `type: Opaque` and MUST contain **`data["conn
 {
   "version": "corvi.naktis.eu/connection/v1",
   "mode": "gateway",
-  "identity": {"id": "notifications", "address": "alerts@example.test"},
-  "capabilities": ["mail:messages:send"],
+  "revision": "example-revision",
+  "grants": [
+    {
+      "identity": {"id": "notifications", "address": "alerts@example.test"},
+      "actions": ["mail:messages:send"]
+    }
+  ],
   "services": {
     "rest": {"url": "https://mail.example.test/v1"},
     "mcp": {"url": "https://mail.example.test/mcp"}
   },
   "auth": {
-    "type": "oauth2_client_credentials",
-    "tokenUrl": "https://auth.example.test/oauth/token",
-    "clientId": "example-client",
-    "clientSecret": "<secret-in-kubernetes-secret-only>",
-    "resource": "https://mail.example.test",
-    "scopes": ["mail:messages:send"]
+    "oauth": {
+      "type": "oauth2_client_credentials",
+      "tokenUrl": "https://auth.example.test/oauth/token",
+      "clientId": "example-client",
+      "clientSecret": "<secret-in-kubernetes-secret-only>",
+      "resource": "https://mail.example.test",
+      "scopes": ["mail:messages:send"]
+    }
   }
 }
 ```
 
 **Illustrative endpoints and placeholder values only**, not deployed Corvi hostnames. In direct mode the document instead carries only supported `imap`, `smtp` and/or `jmap` services, with verified hostnames, ports, TLS modes, SNI/certificate trust requirements, upstream username/account selector, and **service-specific** `app_password`/`api_token` (or provider-supported self-contained OAuth client credentials). Where JMAP is supported, include its Session URL and authenticated JMAP account selection, not a fictional SMTP endpoint. Include provider endpoint provenance/transport generation and optional expiry/rotation timestamps as appropriate. Never serialize a token that has already expired or cannot be renewed safely.
 
+A gateway connection may grant **multiple identities**, and the bundle must keep `grants[]` separate by identity, **not union actions** across mailboxes. Provider-direct connections advertise **exactly one** approved identity and its scoped `capabilities`. The current server-side grant still wins if permissions are later reduced. For direct IMAP/SMTP/JMAP, the actual app credential must be provider-issued and valid for the listed service (not a Corvi token).
+
 The document must be self-contained for a client capable of the listed protocol. Required information per case:
 
 | Connection | Mandatory fields when applicable |
 | --- | --- |
-| Gateway REST/MCP | externally reachable `services.rest.url`, `services.mcp.url` only if enabled; exact OAuth `tokenUrl` (and issuer/discovery URI if needed), `clientId`, protected client credential/approved auth method, `resource` audience and scopes, permitted `identityId` and capabilities |
+| Gateway REST/MCP | externally reachable `services.rest.url`, `services.mcp.url` only if enabled; exact OAuth `tokenUrl` (and issuer/discovery URI if needed), `clientId`, protected client credential/approved auth method, `resource` audience, scopes and **per-identity `grants[]` with independent action sets** |
 | Gateway SMTP AUTH | hostname/port, STARTTLS or implicit TLS, trusted server name, **distinct** SMTP username/password or explicitly supported Corvi SASL token profile; sender address and allowed actions |
 | Direct IMAP | verified host/port/TLS/serverName, username/mailbox identifier and app-token authentication mechanism |
 | Direct SMTP | verified host/port/TLS/serverName, username and app-token authentication mechanism, sender/envelope restrictions |

@@ -29,7 +29,7 @@ Corvi consists of independently deployable components:
 - **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads IMAP, submits SMTP, and owns optional operational state.
 - **Control plane:** Resolves provider settings, reconciles supported upstream resources, issues and rotates gateway configuration/credentials, and publishes versioned configuration snapshots. Optional for standalone deployments.
 - **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
-- **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges.
+- **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
 - **Built-in generic transport:** IMAP and SMTP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
 
 No component may silently add a hard dependency on another optional component.
@@ -81,10 +81,10 @@ It must **not** be called synchronously to authorize a message or supply an IMAP
 
 External plugins are OCI images running gRPC servers. The **image** is the only mandatory plugin-specific deployment field; credentials and configuration are optional and provider-dependent. The operator deploys the plugin rather than requiring a separate user-managed HelmRelease.
 
-Plugins advertise capabilities. Three independently usable capability families are defined:
+Plugins advertise capabilities. Three independently usable capability families are defined. **Transport topology** is an explicit capability within discovery/resolution: direct upstream IMAP/SMTP, existing local bridge, or managed local bridge. OCI image metadata can offer pre-deployment hints, but cannot automatically authorize arbitrary containers/secrets.
 
 1. **Discovery:** Protocol/capability negotiation, supported resource types, configuration schema and telemetry groups.
-2. **Transport resolution:** Return mailbox-specific IMAP and SMTP connection details, supported auth methods, and controlled secret references.
+2. **Transport resolution:** Return mailbox-specific IMAP and SMTP connection details, supported auth methods, explicit direct/bridge transport topology, verified bridge readiness where needed, and controlled secret references.
 3. **Provider management:** Inspect/apply/delete the upstream resources the provider actually supports; return reconciled state and errors.
 
 Provider management is optional. A transport-only external plugin is valid. A management-only plugin is also valid if transport is not needed. For an external managed provider (such as Migadu), the plugin provides the IMAP/SMTP configuration; the gateway should not hard-code provider hostnames or protocol quirks.
@@ -104,7 +104,7 @@ Use Protocol Buffers and gRPC, with versioned packages, such as:
 
 Provider operations are control-plane RPCs. **No provider RPC is required in the data-plane hot path.** The standalone data plane can load the same normalized schema directly from a file.
 
-Transport resolution returns separate IMAP and SMTP endpoints, TLS modes, authentication mechanisms/usernames, and trusted references to credentials. It can include a revision/expiry so the control plane can refresh the result. IMAP and SMTP may have different credentials or endpoints.
+Transport resolution returns separate IMAP and SMTP endpoints, TLS modes, authentication mechanisms/usernames, and trusted references to credentials. It can include a revision/expiry so the control plane can refresh the result. IMAP and SMTP may have different credentials or endpoints. **Some providers require a local proxy/bridge**; discover its requirement from typed OCI metadata hints plus authenticated `GetCapabilities`, then publish validated local transport settings only after bridge initialization. The bridge is a lifecycle dependency, not a provider RPC on the data-plane request path. [ADR-0006](0006-local-transport-bridges.md) specifies deployment and trust requirements.
 
 Plugin-supplied secret identifiers are untrusted input. They must be mapped through a control-plane-owned allowlist and never treated as arbitrary Kubernetes Secret names, paths, or requests for secret access. Never return plaintext credentials in transport descriptors. Upstream credential provisioning, where a provider API can generate a secret only once, requires a dedicated narrow secret-handoff flow.
 
@@ -217,7 +217,7 @@ The optional operator exposes these provisional API concepts, with names and fie
 
 | Resource | Purpose |
 | --- | --- |
-| **MailProvider** | Provider instance, built-in transport settings or OCI plugin image, admin configuration, credentials, capability status |
+| **MailProvider** | Provider instance, built-in transport settings or OCI plugin image, optional managed/existing local transport bridge, admin configuration, credentials, capability status |
 | **MailDomain** | Upstream domain lifecycle and provider reference |
 | **MailDomainPolicy** | Spam, catchall, quota defaults, protocol/security controls and other supported domain settings |
 | **Mailbox** | Physical upstream mailbox, provider reference, lifecycle and credential bindings |
@@ -234,7 +234,7 @@ The optional operator exposes these provisional API concepts, with names and fie
 For **MailProvider**:
 
 - A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP connection parameters come from user configuration.
-- An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics.
+- An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics. Provider images may declare a **local bridge dependency** via OCI annotations/typed descriptor; the controller verifies metadata against trusted gRPC discovery and administrator-approved image/runtime policy before deploying a bridge.
 - If provider administration is enabled but the gateway is disabled, the operator still reconciles domains/mailboxes/aliases/etc.
 - If only transport is configured, Corvi must not attempt provider administration.
 
@@ -316,7 +316,7 @@ The operator can opportunistically create a ServiceMonitor when that CRD is avai
 | **Management-only** | No | Yes | As required | Optional |
 | **Full Kubernetes/GitOps** | Yes | Yes | As required | Yes |
 
-The acceptance target for **minimal standalone** is a single gateway process/container with a local configuration file and upstream IMAP/SMTP credentials. REST, MCP and authenticated SMTP submission work without Kubernetes, provider plugins, an external database, an OTel Collector or Prometheus.
+The acceptance target for **minimal standalone** is a single gateway process/container with a local configuration file and upstream IMAP/SMTP credentials. REST, MCP and authenticated SMTP submission work without Kubernetes, provider plugins, an external database, an OTel Collector or Prometheus. A bridge-dependent provider can also be accessed as **an existing locally available IMAP/SMTP bridge** using explicit verified configuration; automatically managing a bridge is optional and never a prerequisite for generic IMAP/SMTP users.
 
 Kubernetes deployments independently scale gateway, controller/operator and provider plugins. NetworkPolicies, ServiceAccounts and runtime credentials must reinforce the control/data plane division. Existing mail operations must remain available during operator/provider/collector outages, within explicit snapshot and credential expiry policies.
 
@@ -335,7 +335,7 @@ Kubernetes deployments independently scale gateway, controller/operator and prov
 
 The strict boundary improves resilience, auditability, least privilege and portability, at the cost of designing a robust configuration snapshot schema and reliable revocation propagation.
 
-Provider plugins increase interoperability but introduce an untrusted executable supply chain and separate compatibility/versioning concerns. They must be sandboxed and capability-tested.
+Provider plugins increase interoperability but introduce an untrusted executable supply chain and separate compatibility/versioning concerns. They must be sandboxed and capability-tested. Bridge-backed providers add local application state, account enrollment, key/certificate management, and colocated network topology; OCI metadata only suggests prerequisites and never grants runtime or secret privileges.
 
 Verified alias isolation is not achievable for all arbitrary IMAP inboxes without a trusted delivery provenance signal; some installations must use dedicated mailboxes or explicitly accept bestEffort behavior.
 
@@ -348,6 +348,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification.
 3. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
 4. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.
+   - **Bridge compatibility path:** Add the typed provider topology/OCI metadata and local-bridge resolver contract, then test an existing bridge before implementing optional managed-bridge lifecycle or a Proton adapter (see ADR-0006).
 5. **Kubernetes operator:** CRDs, provider Deployment lifecycle, cert-manager CSI/Certificate negotiation, GitOps reconciliation and status.
 6. **Scale/operability:** Durable optional queue, IMAP synchronization, events/indexes, multi-replica coordination, telemetry/alerts.
 
@@ -358,7 +359,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
 - Rejected config snapshots preserve the previous valid generation; partial rollouts are reported.
 - gRPC without valid TLS and authorized peer identity fails closed; no protocol downgrade is possible.
-- External provider plugin crashes do not interrupt existing gateway mail sessions.
+- External provider plugin crashes do not interrupt existing gateway mail sessions. A **local transport bridge outage**, unlike a plugin outage, may interrupt the mailboxes that depend on that bridge; unrelated mailboxes remain available.
 - Cross-identity reads, searches, counts, threads, attachments and events do not leak hidden messages.
 - Verified alias isolation rejects messages lacking trusted recipient provenance; it never silently becomes bestEffort.
 - SMTP AUTH cannot impersonate unauthorized header From or envelope senders.
@@ -367,6 +368,8 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - Mailbox synchronization handles UIDVALIDITY changes, moves, deletes and concurrent workers.
 - Scraping metrics never triggers upstream API calls; metrics/OTLP outages do not block provisioning or mail operations.
 - Provider usage metrics report unavailable quotas as unsupported, not fabricated.
+- OCI provider bridge requirements cannot deploy untrusted containers or request arbitrary secrets; bridge capability discovery is validated against administrator-approved runtime profiles.
+- Existing local bridges work without Kubernetes; loopback-only bridges are not silently exposed as routable Services; bridge secret/state and TLS identity remain isolated.
 - Kubernetes CSI/Certificate fallback does not introduce trust-manager or certificate downgrade dependencies.
 
 ## 14. Open design questions

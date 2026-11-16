@@ -1,0 +1,186 @@
+# Corvi operator design profile for bjw-s-labs/app-template 5.2.1.
+# NOT deployable: Corvi images, CRD groups/plurals and flag contracts are provisional.
+# Install Corvi CRDs through a SEPARATE privileged bootstrap chart/process.
+# This release owns no SQL database and requires no cluster-admin/ClusterRole.
+defaultPodOptions:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  shareProcessNamespace: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+    appArmorProfile:
+      type: RuntimeDefault
+
+controllers:
+  operator:
+    type: deployment
+    replicas: 1
+    strategy: RollingUpdate
+    serviceAccount:
+      identifier: operator
+    pod:
+      # The one normally permitted Kubernetes API client in Corvi.
+      automountServiceAccountToken: true
+    applyDefaultContainerOptionsToInitContainers: true
+    defaultContainerOptionsStrategy: merge
+    defaultContainerOptions:
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+          add: []
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+          ephemeral-storage: 256Mi
+    containers:
+      manager:
+        image:
+          repository: ghcr.io/naktis-labs/corvi-operator
+          tag: NOT-PUBLISHED-DO-NOT-DEPLOY
+          pullPolicy: IfNotPresent
+        env:
+          HOME: /tmp
+          XDG_CACHE_HOME: /tmp/.cache
+          TMPDIR: /tmp
+        probes:
+          startup:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/startup
+                port: 8081
+              periodSeconds: 5
+              failureThreshold: 30
+          readiness:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/ready
+                port: 8081
+          liveness:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/live
+                port: 8081
+
+serviceAccount:
+  operator:
+    enabled: true
+    forceRename: corvi-operator
+    automountServiceAccountToken: true
+    staticToken: false
+
+rbac:
+  roles:
+    operator:
+      type: Role
+      rules:
+        # Replace provisional API groups/plurals once CRDs are finalized.
+        # Read desired state, never write user-owned spec.
+        - apiGroups:
+            - corvi.naktis.eu
+            - mail.corvi.naktis.eu
+          resources:
+            - mailproviders
+            - maildomains
+            - maildomainpolicies
+            - mailboxes
+            - mailaliases
+            - mailforwardings
+            - mailrewrites
+            - mailidentities
+            - mailpolicies
+            - mailfilterpolicies
+            - mailcredentials
+            - providerconnections
+          verbs: [get, list, watch]
+        # Status subresource only, NOT spec mutation or broad wildcard.
+        - apiGroups:
+            - corvi.naktis.eu
+            - mail.corvi.naktis.eu
+          resources:
+            - mailproviders/status
+            - maildomains/status
+            - maildomainpolicies/status
+            - mailboxes/status
+            - mailaliases/status
+            - mailforwardings/status
+            - mailrewrites/status
+            - mailidentities/status
+            - mailpolicies/status
+            - mailfilterpolicies/status
+            - mailcredentials/status
+            - providerconnections/status
+          verbs: [get, patch, update]
+        # Finalizer updates are needed only on CRDs which own resources to clean up.
+        - apiGroups:
+            - corvi.naktis.eu
+            - mail.corvi.naktis.eu
+          resources:
+            - mailproviders/finalizers
+            - maildomains/finalizers
+            - mailboxes/finalizers
+            - providerconnections/finalizers
+          verbs: [update, patch]
+        # Plugin lifecycle (restricted by independent admission on PodSpecs).
+        # If operator is in read-only discovery mode, omit these rules.
+        - apiGroups: [apps]
+          resources: [deployments]
+          verbs: [get, list, watch, create, update, patch, delete]
+        - apiGroups: [""]
+          resources: [services, configmaps]
+          verbs: [get, list, watch, create, update, patch, delete]
+        # Leader election within the release namespace only.
+        - apiGroups: [coordination.k8s.io]
+          resources: [leases]
+          verbs: [get, create, update, patch]
+        # Named Secrets get only if operator itself needs it. Prefer mounted
+        # provider admin Secrets and keep this entire rule DISABLED by default.
+        # - apiGroups: [""]
+        #   resources: [secrets]
+        #   resourceNames: [approved-provider-credential]
+        #   verbs: [get]
+  bindings:
+    operator:
+      type: RoleBinding
+      roleRef:
+        identifier: operator
+        kind: Role
+      subjects:
+        - kind: ServiceAccount
+          name: corvi-operator
+          # Match the Helm release namespace; design fixture uses corvi-system.
+          namespace: corvi-system
+
+persistence:
+  tmp:
+    type: emptyDir
+    medium: Memory
+    sizeLimit: 64Mi
+    advancedMounts:
+      operator:
+        manager:
+          - path: /tmp
+
+# No secrets list/watch, no serviceaccounts/token, no RBAC mutation,
+# no nodes/namespaces, no pods/exec, no ClusterRoleBinding.
+# Enforcement for arbitrary Deployment.create MUST live in independent
+# admission controls: RBAC cannot constrain a generated PodSpec's SA,
+# image, privileged flag, service account token mount, or secret volumes.
+# NetworkPolicy must allow this Pod ONLY DNS, K8s API, authorized
+# provider management endpoints/OCI metadata, and gRPC plugin servers.

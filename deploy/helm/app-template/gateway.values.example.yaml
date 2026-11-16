@@ -1,0 +1,122 @@
+# Corvi gateway design profile for bjw-s-labs/app-template 5.2.1.
+# NOT deployable: Corvi application images/health handlers/env contract are not released.
+# Install against a pinned app-template 5.2.1; replace example image with signed digest.
+# Security invariants MUST be verified on rendered Pods and enforced by admission.
+defaultPodOptions:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  shareProcessNamespace: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+    # Requires Kubernetes/AppArmor support on cluster nodes.
+    appArmorProfile:
+      type: RuntimeDefault
+
+controllers:
+  gateway:
+    type: deployment
+    replicas: 1
+    # Stateless direct-transport example. SQLite would require a single-writer
+    # local PVC, Recreate strategy and separately tested fsGroup mount ownership.
+    strategy: RollingUpdate
+    serviceAccount:
+      identifier: gateway
+    pod:
+      automountServiceAccountToken: false
+    applyDefaultContainerOptionsToInitContainers: true
+    defaultContainerOptionsStrategy: merge
+    defaultContainerOptions:
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        capabilities:
+          drop: [ALL]
+          add: []
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+          ephemeral-storage: 256Mi
+    containers:
+      app:
+        image:
+          # Illustrative ONLY: no released Corvi image/digest exists.
+          repository: ghcr.io/naktis-labs/corvi
+          tag: NOT-PUBLISHED-DO-NOT-DEPLOY
+          pullPolicy: IfNotPresent
+        env:
+          # Planned runtime paths/keys, not implemented environment variables.
+          HOME: /tmp
+          XDG_CACHE_HOME: /tmp/.cache
+          TMPDIR: /tmp
+        probes:
+          startup:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/startup
+                port: 8080
+              periodSeconds: 5
+              failureThreshold: 30
+          readiness:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/ready
+                port: 8080
+              periodSeconds: 10
+          liveness:
+            enabled: true
+            spec:
+              httpGet:
+                path: /health/live
+                port: 8080
+              periodSeconds: 30
+
+serviceAccount:
+  gateway:
+    enabled: true
+    automountServiceAccountToken: false
+    staticToken: false
+
+service:
+  gateway:
+    controller: gateway
+    ports:
+      http:
+        port: 8080
+        # A Gateway/HTTPRoute may expose port 443; Pod binds unprivileged 8080.
+      smtp:
+        port: 2525
+        # If enabled, external Service port 587 can target Pod port 2525.
+
+persistence:
+  tmp:
+    type: emptyDir
+    medium: Memory
+    sizeLimit: 64Mi
+    advancedMounts:
+      gateway:
+        app:
+          - path: /tmp
+
+# NetworkPolicy is deliberately not hand-waved by app-template defaults.
+# Install namespace-level ingress/egress default-deny and allow ONLY:
+#   - Gateway API/controller -> gateway:8080
+#   - approved SMTP submitter -> gateway:2525 (if enabled)
+#   - gateway -> DNS, explicit upstream IMAP/SMTP/JMAP/OAuth, needed DB/AS/PDP
+#   - operator -> gateway mTLS config endpoint ONLY when feature enabled
+# Use explicit dual-stack egress restrictions; DNS/FQDN filtering requires CNI
+# support beyond native Kubernetes NetworkPolicy.
+# No RBAC Role or RoleBinding is generated for this release.

@@ -6,7 +6,7 @@ Corvi is a planned open-source mail gateway and management platform from Naktis 
 
 ## Goals
 
-1. **Scoped personal mail access:** Expose existing mail safely to agents and applications through REST/MCP with fine-grained identities, authorization, and disclosure filtering.
+1. **Scoped personal mail access:** Expose existing mail safely to agents and applications through REST/MCP with fine-grained identities, authorization, and disclosure filtering. A single MCP/REST token may authorize multiple identities across different physical mailboxes/providers, each with independent permissions; operations explicitly select one identity.
 2. **Automated service mailbox management:** Provision and reconcile mailboxes, aliases, routing, sender identities and service credentials for self-hosted infrastructure.
 3. **Agent-facing MCP skill:** Write and maintain a distributable agent skill (`SKILL.md` and supporting examples) that teaches clients how to connect to Corvi's MCP server, discover permitted tools/identities, search/read safely, send with appropriate confirmation, handle filtered/unavailable results, and avoid assuming inaccessible mail does not exist. The skill must describe actual implemented behavior, never expand credential scope, and ship alongside the MCP API documentation.
 

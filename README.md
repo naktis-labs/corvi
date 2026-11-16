@@ -21,6 +21,8 @@ The key boundaries are:
 - **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
 - **Observability:** OpenTelemetry and Prometheus/OTLP, with provider plugins acting as exporters. TLS/mTLS is mandatory for internal gRPC, and Kubernetes may opportunistically use cert-manager's CSI driver.
 
+**Namespace convention:** Corvi-owned API groups and metadata use the `naktis.eu` domain, generally under `corvi.naktis.eu` (for example, `mail.corvi.naktis.eu`). OCI reverse-DNS annotation keys use `eu.naktis.corvi.*`. Third-party registry hosts and documentation URLs retain their original domains.
+
 ## Design decisions
 
 Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architecture.md)** for the complete architectural decision, threat boundaries, identity and alias isolation requirements, data-plane behavior, provider resource model, certificate strategy, and phased implementation plan.

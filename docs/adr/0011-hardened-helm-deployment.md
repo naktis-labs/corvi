@@ -32,7 +32,8 @@ deploy/helm/
 
 | Profile | Controller | Kubernetes API token | Persistence/owner |
 | --- | --- | --- | --- |
-| `gateway` | Deployment or StatefulSet (when local SQLite) | **No** | Validated active snapshot, data-plane SQLite/PVC or external PostgreSQL |
+| `gateway` (Helm-direct) | App-template-owned Deployment or StatefulSet (when local SQLite) | **No** | Validated active snapshot, data-plane SQLite/PVC or external PostgreSQL |
+| `CorviGateway` (operator-managed) | Operator-owned Deployment/StatefulSet from namespaced custom resource | **No** | Same gateway runtime/storage, configured via [ADR-0012](0012-corvi-gateway-deployment-crd.md); never also Helm-owned |
 | `oauth` | Optional Deployment, possibly same Rust binary but separate listener/Pod | **No** | OAuth SQLite/PVC or PostgreSQL, independent token/grant domain |
 | `operator` | Deployment with a dedicated SA | **Yes, strictly scoped** | **Kubernetes CRDs/status/Leases; no operator database** |
 | `provider-plugin` | Operator-managed digest-pinned Deployment/Job | **No** | Explicit provider-admin secret refs only; no arbitrary Kubernetes rights |
@@ -41,11 +42,11 @@ deploy/helm/
 | `policy-wasm` | In-process runtime; **not** a separate Pod for OCI-WASM images | **No** | Verified, digest-pinned WASM module/image volume |
 | `external-pdp` | Optional separately deployed component | **No** unless its own documented feature requires it | mTLS, narrowly scoped metadata; never mail-body-by-default |
 
-Use **one chosen source for generated Kubernetes objects**: bjw-s app-template for ordinary workload resources, with Corvi-specific Helm templates or a small pre-install/bootstrap chart **only for CRDs/admission policies and resources not adequately represented by the library**. Avoid duplicated Deployments between chart and operator. The operator controls plugin/bridge Pods at runtime from validated CRDs; Helm doesn't maintain every dynamic provider instance.
+Use **one chosen source for generated Kubernetes objects**: bjw-s app-template for the operator and **Helm-direct** gateway resources, and the **CorviGateway controller** for gateways explicitly selected into operator management (ADR-0012). A small pre-install/bootstrap chart is reserved for CRDs/admission policies and resources not adequately represented by the library. Avoid duplicated Deployments between chart and operator. The operator reconciles Kubernetes workloads directly; it does not run Helm internally per CorviGateway. The operator controls plugin/bridge Pods at runtime from validated CRDs; Helm doesn't maintain every dynamic provider instance.
 
 - **CRDs:** install/update separately (dedicated `corvi-crds` release or GitOps-controlled CRD bundle). Helm `crds/` files are not a complete CRD upgrade/uninstall strategy. Preserve conversion/version-skew tests; uninstalling workloads must not silently delete providers, mail identities or secrets.
 - **Chart dependency:** pin app-template to an exact tested version/OCI digest where tool support permits; use Renovate and compatibility CI before bumps. v5 chart requires Kubernetes >=1.31 and Helm >=3.18 according to its release notes; verify the chart's exact requirements during packaging.
-- **Profiles:** `gateway-only`, `operator-only`, `gateway+OAuth`, `full managed` and `existingBridge`. Disabling optional components creates **no RBAC or dangling service accounts** for them.
+- **Profiles:** `gateway-only` (Helm-direct), `operator-only`, `gateway+OAuth`, `full managed`, `operator-managed CorviGateway` and `existingBridge`. Disabling optional components creates **no RBAC or dangling service accounts** for them. Gateways in different ownership modes may share a cluster, but not the same Kubernetes workload name/selector/owner.
 - **Values:** use bjw-s keys such as `controllers`, `defaultPodOptions`, `controllers.*.defaultContainerOptions`, `serviceAccount`, `rbac`, `service`, `route`, `persistence`, `networkpolicies` and `rawResources`; chart-specific higher-level values must render these without exposing a bypass for mandatory hardening.
 - **Dangerous defaults are not overridable by ordinary values**: any `extraContainers`, custom templates, init containers, operator-generated Pods or raw manifests require the same admission profile, with CI validation and explicit operator/admin review.
 
@@ -113,7 +114,7 @@ securityContext:
 | Optional programmatic Secret rotator | Dedicated restricted SA **only if really needed** | Explicit named Secret `get`/`update` where supported, never namespace-wide listing by default |
 
 Operator RBAC design:
-- **Namespaced controller mode is preferred.** Namespaced `Role` / `RoleBinding` for allowed CRD resources, `status` and `finalizers` subresources; `get,list,watch` for intended kinds; `create,patch,update,delete` only for needed managed Deployments/Jobs/Services/ConfigMaps; `leases` `get,create,update,patch` in a designated election namespace; Secrets **only named, minimal get permissions** or indirect reference to externally mounted Secrets. Some Kubernetes RBAC operations (e.g. `create`, `list`, `watch`) cannot be limited by `resourceNames` as a general strategy; combine namespace isolation and admission policy. Do not grant `list secrets` casually.
+- **Namespaced controller mode is preferred.** Namespaced `Role` / `RoleBinding` for allowed CRD resources, including `corvigateways` (`corvi.naktis.eu`) and their `status`/`finalizers` subresources, with bounded Deployment/**StatefulSet**/Service/ConfigMap reconciliation; `get,list,watch` for intended kinds; `create,patch,update,delete` only for needed managed Deployments/Jobs/Services/ConfigMaps; `leases` `get,create,update,patch` in a designated election namespace; Secrets **only named, minimal get permissions** or indirect reference to externally mounted Secrets. Some Kubernetes RBAC operations (e.g. `create`, `list`, `watch`) cannot be limited by `resourceNames` as a general strategy; combine namespace isolation and admission policy. Do not grant `list secrets` casually.
 - **Cluster-scope watch is an explicit alternate install mode**, with a narrowly scoped ClusterRole/ClusterRoleBinding only for CRDs/resources needing cluster-wide watch. CRD installation/upgrade, Namespace changes, RBAC role creation, impersonation, CSR approval and admission policy installation belong to **separate installer/GitOps permissions**, not the runtime operator.
 - No `cluster-admin`, wildcard `apiGroups/resources/verbs`, `escalate`/`bind`/`impersonate`, arbitrary Secrets enumerate, `pods/exec`, `pods/attach`, `pods/portforward`, `serviceaccounts/token`, node/proxy, workload privilege changes or webhooks in the runtime Role.
 - **Token mount:** set `defaultPodOptions.automountServiceAccountToken: false` globally. Operator-only Pod uses `controllers.operator.pod.automountServiceAccountToken: true` **or**, preferably, a separate projected `serviceAccountToken` volume with short expiration and an API-server audience, with the default mount still disabled. Use a bounded TTL and validate it works for the controller's client implementation; do not configure both automatic and projected mounts.
@@ -172,6 +173,7 @@ Operator RBAC design:
 10. Image/supply-chain tests reject mutable `latest`, untrusted plugin digest, malformed signature, unsupported non-root image and missing SBOM per published release gate.
 11. Chart upgrade/rollback and CRD conversion are tested independently; no surprise credential/PVC deletion, accidental privileged new hook or restart of active bridge accounts.
 12. Admission policies and deployment scans refuse securityContext override via values, `rawResources`, arbitrary sidecars and unmanaged operator-generated workloads.
+13. Operator-managed **CorviGateway** instances produce the same restricted no-token Pods as app-template gateways; a Helm-owned resource cannot be adopted or modified by the operator, and SQLite single-writer mode cannot scale beyond one replica (ADR-0012).
 
 ## References
 

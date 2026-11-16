@@ -180,7 +180,7 @@ Provider forwarding, rewriting, catchalls, delegation and other upstream deliver
 
 Expose provider-neutral REST and MCP operations for mail listing, reading, searching, threading, structured metadata, attachments, sending and supported mutations. Use stable gateway-visible message identifiers and cursor-based pagination instead of leaking raw IMAP concepts.
 
-**Public API specification:** [ADR-0005](0005-public-mail-api.md), [OpenAPI 3.1](../../api/openapi.yaml) and the [MCP 2026-07-28 contract](../spec/mcp.md) define the proposed initial subset. In v1, conversation/thread grouping may be represented by an opaque ID, but separate conversation browsing, message mutations and event streaming remain deferred until their permission and filtering semantics are specified.
+**Public API specification:** [ADR-0005](0005-public-mail-api.md), [OpenAPI 3.1](../../api/openapi.yaml) and the [MCP 2026-07-28 contract](../spec/mcp.md) define the proposed initial subset. The MCP server additionally exposes bounded, caller-authorized **read-only context resources** (server overview, authorized identities, safe policy guidance, and per-identity context) plus visible-mail revision resources. These are not new routes to raw email or administrative data. In v1, conversation/thread grouping may be represented by an opaque ID, but separate conversation browsing, message mutations and event streaming remain deferred until their permission and filtering semantics are specified.
 
 SMTP submission is a legacy compatibility listener with per-identity SMTP AUTH and strict server-side sender enforcement. It is not a second authorization system.
 

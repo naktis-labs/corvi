@@ -1,5 +1,5 @@
 {
-  "CONNECTION_SHAPE": "mcp",
+  "CONNECTION_TYPE": "mcp",
   "CONNECTION_MODE": "gateway",
   "AUTH_TYPE": "oauth2_client_credentials",
   "CREDENTIAL_GRANULARITY": "corviIdentity",

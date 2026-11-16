@@ -115,7 +115,7 @@ Plugin gRPC must use deadlines, bounded request/response sizes, health/readiness
 
 ## 3. Config delivery, lifecycle and failure behavior
 
-Configuration is expressed as a **provider-neutral versioned snapshot** containing mailbox transport settings, virtual identities, policies, credential verifiers/references, and relevant feature settings.
+Configuration is expressed as a **provider-neutral versioned snapshot** containing mailbox transport settings, virtual identities, policies, credential verifiers/references, and relevant feature settings. In operator mode the snapshot is derived through **`MailIdentity.spec.mailboxRef → Mailbox.spec.providerRef → MailProvider.spec.gatewayRef → CorviGateway`**; no gateway-side identity list or implicit cross-gateway access exists. Missing or migrating parent edges fail closed (ADR-0013).
 
 - Validate a complete snapshot before activation.
 - Atomically replace the active snapshot; persist the last known good revision.
@@ -133,7 +133,7 @@ Revocation is only immediately effective on replicas that have received the new 
 
 ### 4.1 Separation of physical mailbox and virtual identity
 
-A physical **Mailbox** represents upstream message storage/access. A **MailIdentity** represents an authorized address, sender persona, and restricted logical view over a mailbox.
+A physical **Mailbox** represents upstream message storage/access. A **MailIdentity** represents an authorized address, sender persona, and restricted logical view over a mailbox. In Kubernetes, **`MailIdentity.spec.mailboxRef` selects its single parent Mailbox, `Mailbox.spec.providerRef` selects its single MailProvider, and `MailProvider.spec.gatewayRef` selects its single CorviGateway**. Each reference is typed, required and same-namespace; the operator derives the gateway's identities by following the graph, rather than storing inverse lists on CorviGateway ([ADR-0013](0013-mail-resource-ownership-graph.md)). These are logical parent links, never Kubernetes ownerReferences that cascade-delete upstream accounts.
 
 A MailIdentity specifies:
 
@@ -142,7 +142,7 @@ A MailIdentity specifies:
 - Permitted From and SMTP envelope-sender identities.
 - The policies and credentials that may act on its behalf.
 
-A **MailCredential** references **one or more explicitly permitted identities**, each with its own applicable action grants and policies. An OAuth grant is **bound to an authenticated principal, specific OAuth client, Corvi mail-resource audience, current grant revision and individually consented identity/action sets**. OAuth scopes alone cannot authorize an identity; only the intersection of token claims, approved grant and current MailPolicy can authorize a call. (See ADR-0009.) This includes identities on **distinct physical mailboxes and upstream providers**, all usable by **one MCP/REST access token** without reconnecting or authenticating separately per mailbox. Requests explicitly select an `identityId`, and Corvi resolves its backing mailbox from trusted configuration; permissions and disclosure policies are never unioned across identities. A credential granting read on identity A and send on identity B does not grant send on A or read on B. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions per identity. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
+A **MailCredential** references **one or more explicitly permitted identities**, each with its own applicable action grants and policies. An OAuth grant is **bound to an authenticated principal, specific OAuth client, Corvi mail-resource audience, current grant revision and individually consented identity/action sets**. OAuth scopes alone cannot authorize an identity; only the intersection of token claims, approved grant and current MailPolicy can authorize a call. (See ADR-0009.) This includes identities on **distinct physical mailboxes and upstream providers associated with the same Corvi gateway/audience**, all usable by **one MCP/REST access token** without reconnecting or authenticating separately per mailbox. An identity owned by a different gateway/resource audience is **not** implicitly included in that access token. Requests explicitly select an `identityId`, and Corvi resolves its backing mailbox from trusted configuration; permissions and disclosure policies are never unioned across identities. A credential granting read on identity A and send on identity B does not grant send on A or read on B. Credentials can be per-app/per-agent, read-only, send-only, or restricted to specified actions per identity. REST/MCP bearer credentials and SMTP AUTH credentials may have different issuance and verification mechanisms, but resolve to the same policy enforcement model. Default deny applies everywhere.
 
 ### 4.2 Provable alias isolation
 
@@ -225,18 +225,20 @@ The optional operator exposes these provisional API concepts, with names and fie
 
 | Resource | Purpose |
 | --- | --- |
-| **CorviGateway** | Optional namespaced gateway runtime instance: replicas, explicit MailIdentity references, exposed protocols, authorization/state references and limits; operator-managed workload and sanitized status (ADR-0012) |
-| **MailProvider** | Provider instance, built-in IMAP/SMTP/JMAP transport settings or OCI plugin image, optional managed/existing IMAP/SMTP bridge, admin configuration, credentials, capability status |
+| **CorviGateway** | Optional namespaced gateway runtime/logical parent instance: replicas, listeners, authorization/state references, resource limits and optional management-only suspension. Its provider/mailbox/identity descendants are **derived, not listed** (ADR-0012/0013) |
+| **MailProvider** | **Required `spec.gatewayRef.name` → CorviGateway**, plus built-in IMAP/SMTP/JMAP transport settings or OCI plugin image, optional managed/existing bridge, admin configuration and capability status |
 | **MailDomain** | Upstream domain lifecycle and provider reference |
 | **MailDomainPolicy** | Spam, catchall, quota defaults, protocol/security controls and other supported domain settings |
-| **Mailbox** | Physical upstream mailbox, provider reference, lifecycle and credential bindings |
+| **Mailbox** | **Required `spec.providerRef.name` → MailProvider**, physical upstream mailbox and lifecycle/credential bindings |
 | **MailAlias** | Alias and internal destination mapping, potentially multiple destinations |
 | **MailForwarding** | External forwarding and its confirmation/expiration policy |
 | **MailRewrite** | Ordered/pattern-based address rewrite rules |
-| **MailIdentity** | Virtual view and sender identity over a mailbox |
+| **MailIdentity** | **Required `spec.mailboxRef.name` → Mailbox**, virtual filtered view and sender identity |
 | **MailPolicy** | Action-level grants and references to applicable disclosure filters; never broadens identity scope |
 | **MailFilterPolicy** | Declarative message visibility, classification, redaction, attachment and rendering restrictions (see ADR-0003) |
 | **MailCredential** | Scoped gateway authentication material, issuance/revocation lifecycle |
+
+**Reference hierarchy:** `MailIdentity → Mailbox → MailProvider → CorviGateway` is the **only authoritative gateway attachment path**. References point from child to parent, each parent has many possible children, and the gateway keeps **no** `mailIdentityRefs`, `mailboxRefs`, or `providerRefs`. The operator reindexes and publishes complete snapshots when any parent ref changes, removing access from the old gateway before enabling a new one. Missing, stale, cross-namespace and mismatched links fail closed; no resource acquires access permissions merely from being in this graph. See [ADR-0013](0013-mail-resource-ownership-graph.md), [proposed reference schema](../../api/mail-resource-ownership.schema.json) and [linked example](../../deploy/examples/mail-resource-chain.example.yaml).
 
 **Mailbox lifecycle** must distinguish provider-managed creation/reconciliation from **External** existing mailboxes that Corvi merely accesses. `MailProvider` and `Mailbox` may refer to a separately permissioned `ProviderConnection` (or equivalent) holding upstream OAuth account binding and protected secret references. Provider OAuth access does not grant clients access to any Corvi identity.
 
@@ -244,10 +246,10 @@ For **MailProvider**:
 
 - A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP **or native JMAP** transport settings come from user configuration and the proposed [transport schema](../../api/mail-transport.schema.json). It may use upstream OAuth through an explicitly configured account and **standalone local CLI-assisted login**, without a required provider OCI plugin; provider-specific OAuth client registration constraints still apply.
 - An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics. Provider images may declare a **local bridge dependency** via OCI annotations/typed descriptor; the controller verifies metadata against trusted gRPC discovery and administrator-approved image/runtime policy before deploying a bridge.
-- If provider administration is enabled but the gateway is disabled, the operator still reconciles domains/mailboxes/aliases/etc.
+- If provider administration is enabled but mail access is disabled, a provider still points to its logical `CorviGateway`; **`CorviGateway.spec.suspended: true`** suppresses data-plane Pods while letting provider administration reconcile domains/mailboxes/aliases/etc. (ADR-0013).
 - If only transport is configured, Corvi must not attempt provider administration.
 
-**Gateway ownership:** Helm-direct and CorviGateway operator-managed workloads are separate deployment choices. Never have both controllers mutate one Deployment/StatefulSet, Service or configuration; never auto-adopt Helm-managed objects. CorviGateway must not expose raw PodSpecs, arbitrary images, elevated security contexts or Kubernetes API token configuration. The operator reconciles it under ADR-0011 security invariants and never becomes a synchronous mail dependency ([ADR-0012](0012-corvi-gateway-deployment-crd.md)).
+**Gateway ownership:** Helm-direct and CorviGateway operator-managed workloads are separate deployment choices. Standalone/Helm-direct configurations use the same logical chain without requiring a Kubernetes CRD; provider `gatewayRef` in operator mode must resolve to a real namespaced CorviGateway, never silently adopt a Helm-owned Deployment. Never have both controllers mutate one Deployment/StatefulSet, Service or configuration; never auto-adopt Helm-managed objects. CorviGateway must not expose raw PodSpecs, arbitrary images, elevated security contexts or Kubernetes API token configuration. The operator reconciles it under ADR-0011 security invariants and never becomes a synchronous mail dependency ([ADR-0012](0012-corvi-gateway-deployment-crd.md)).
 
 CRDs must not copy provider API objects wholesale. Generic resource schemas should represent common semantics, with an explicit namespaced provider-specific extension/config section where unavoidable. Status must distinguish unsupported capability, not configured, validation failure, provider outage and actual drift. Do not attempt destructive reconciliation for API operations a provider does not support.
 
@@ -370,6 +372,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state. Helm uses [ADR-0011](0011-hardened-helm-deployment.md) rootless, readonly, no-capabilities, RuntimeDefault and narrow token/RBAC defaults.
 - A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
+- The graph `MailIdentity.spec.mailboxRef → Mailbox.spec.providerRef → MailProvider.spec.gatewayRef → CorviGateway` is complete and same-namespace; gateway CRDs have no inverse identity list. Reparenting revokes old access before activation of a new gateway; suspended gateway still permits provider administration without mail Pods (ADR-0013).
 - A CorviGateway-owned workload and a Helm-owned gateway workload can coexist in a cluster but may **never share workload ownership**. Operator-generated gateways use a no-token ServiceAccount and the same rootless, no-capabilities, read-only-root security policy (ADR-0012).
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
 - Rejected config snapshots preserve the previous valid generation; partial rollouts are reported.

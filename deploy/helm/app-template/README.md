@@ -12,6 +12,8 @@ Read [ADR-0011: Helm chart and Kubernetes hardening](../../../docs/adr/0011-hard
 | [`app-template-operator.values.yaml`](../app-template-operator.values.yaml) | Kubernetes CRD controller and approved OCI provider plugin manager | **Yes** | Namespaced Role only; read CRDs, patch status/finalizers, manage limited workloads, Lease |
 | [`networkpolicy.example.yaml`](networkpolicy.example.yaml) | Default-deny and bounded DNS egress for Corvi namespace | N/A | Independently add explicitly approved per-component network flows |
 
+A gateway can alternatively be created by the operator from a namespaced [`CorviGateway` resource](../../examples/corvi-gateway.example.yaml), documented in [ADR-0012](../../../docs/adr/0012-corvi-gateway-deployment-crd.md). In that mode, **do not install a Helm-direct app-template gateway release owning the same Deployment/Service**. Helm still installs the operator (and separate CRD bootstrap), while the operator builds equally hardened gateway PodSpecs directly rather than spawning Helm per CRD.
+
 Independent Corvi OAuth issuer, provider adapters, WASM/PDP and bridge runtime use the **same container/pod hardening profile** as gateway with separate namespace/ServiceAccounts/network and Secret references. They are not automatically enabled by the operator release. Only the operator normally needs the Kubernetes API.
 
 ## Chart base
@@ -72,7 +74,7 @@ Images, optional read-only policy WASM image volumes, Secrets and CRDs are separ
 
 Install versioned Corvi CRDs independently via a bootstrap chart or GitOps manifests using the **installer's** privileged identity. Do **not** give Corvi's operator permission to install its own CRDs, write RBAC/ClusterRoleBindings or access arbitrary Secrets. Operator namespaces must be explicit.
 
-The operator Role example contains **provisional CRD plural names and API groups** and must be reconciled with real generated manifests before use. The RoleBinding's `subjects[].namespace` must match the release namespace. Narrow or remove plugin Deployment/Service/ConfigMap permissions in read-only configurations. For `secrets`, prefer projected read-only named Secrets; a broker that truly performs dynamic rotation needs its own scoped SA/Role. **No wildcard resources/verbs or Secrets list/watch.**
+The operator Role example includes `corvigateways` with namespaced `get/list/watch` and scoped `status`/`finalizers` writes, plus the ability to reconcile Deployments/StatefulSets. The CRD and workload implementation are not yet released. The operator Role example contains **provisional CRD plural names and API groups** and must be reconciled with real generated manifests before use. The RoleBinding's `subjects[].namespace` must match the release namespace. Narrow or remove plugin Deployment/Service/ConfigMap permissions in read-only configurations. For `secrets`, prefer projected read-only named Secrets; a broker that truly performs dynamic rotation needs its own scoped SA/Role. **No wildcard resources/verbs or Secrets list/watch.**
 
 RBAC allowing `deployments create` is a privileged workflow: Kubernetes RBAC cannot constrain the Pod template. An independent validating policy must reject arbitrary ServiceAccounts, token automounts, elevated Pod security, image/registry changes, volume mounts and unknown secrets from operator-created plugin Deployments.
 
@@ -90,7 +92,7 @@ Enforce `pod-security.kubernetes.io/enforce: restricted` on the namespace, toget
 - Test Pod Security restricted compatibility and explicit `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`, **no added caps**, non-root, `RuntimeDefault`, `allowPrivilegeEscalation: false` for all regular, init, ephemeral and operator-created provider Pods.
 - Audit `serviceAccountName`, token automount and projected tokens: operator only by default; no long-lived SA token Secrets.
 - Verify `kubectl auth can-i` for forbidden actions under each SA, including all Secrets, RBAC mutation, token creation, Pod exec, node and namespace access. Confirm Role namespace and no wildcard authorization.
-- Test operator-created Deployment admission independently, image signatures and pinned digests, invalid Secrets/Pod templates, NetworkPolicy/IPv6 and no unapproved internet egress.
+- Test operator-created Deployment/StatefulSet admission independently, image signatures and pinned digests, invalid Secrets/Pod templates, NetworkPolicy/IPv6 and no unapproved internet egress. Test that a CorviGateway never adopts a Helm-owned resource or allows unsafe security overrides.
 - Check rootless startup, ephemeral scratch, SQLite/PVC permissions, cert-manager CSI, graceful shutdown and no accidental sensitive exposure through logs/metrics/Helm history.
 - Re-run on all chart/CRD/Kubernetes version upgrades, fail closed on incompatible deployment constraints.
 

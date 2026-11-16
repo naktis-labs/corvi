@@ -478,6 +478,7 @@ components:
             enum:
               - "mail:identities:list"
               - "mail:messages:list"
+            - "mail:messages:subscribe"
               - "mail:messages:search"
               - "mail:messages:read"
               - "mail:attachments:read"

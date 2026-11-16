@@ -1,0 +1,43 @@
+# Design example ONLY: CorviGateway CRD/controller do not exist yet.
+# Apply only after separate privileged CRD bootstrap and the operator are built.
+# Operator-managed mode: DO NOT also install a Helm-owned gateway Deployment.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: primary
+  namespace: corvi-system
+spec:
+  replicas: 2
+  # Binds this gateway to a selected subset of local Corvi MailIdentity objects,
+  # not all identities in the cluster and not a grant to every OAuth client.
+  mailIdentityRefs:
+    - name: personal
+    - name: service
+  listeners:
+    http:
+      enabled: true      # runtime port 8080, ClusterIP Service
+    smtpSubmission:
+      enabled: false     # optional unprivileged runtime port 2525
+  authorization:
+    mode: external       # external|embedded; separate owner grants apply
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: postgres    # ephemeral|sqlite|postgres
+    connectionSecretRef:
+      name: corvi-runtime-db
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 256Mi
+
+# Invariants (not configurable above):
+# - Every container rootless UID/GID 65532, no privilege escalation,
+#   seccomp RuntimeDefault, all capabilities dropped, read-only rootfs
+# - No Pod Kubernetes service-account token, no arbitrary PodSpec/image
+# - Gateway workload is owned by CorviGateway, never also by Helm
+# - Gateway API HTTPRoute is managed separately and targets the Service
+# - Secrets and state PVCs are pre-created/referenced and not owner-deleted

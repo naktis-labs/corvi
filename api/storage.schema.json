@@ -1,0 +1,748 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/storage/v1alpha1",
+  "title": "Corvi state and secret storage configuration (proposed)",
+  "description": "Design contract for Corvi standalone/HA relational persistence, secret custody, and optional encrypted blobs (ADR-0010). Not implemented. Backends do not confer permission to access data; separate application authorization is mandatory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "state",
+    "secrets",
+    "blobs",
+    "features"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.eu/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "CorviStorage"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "secrets": {
+      "$ref": "#/$defs/secretStore"
+    },
+    "blobs": {
+      "$ref": "#/$defs/blobStore"
+    },
+    "features": {
+      "$ref": "#/$defs/features"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "features": {
+            "properties": {
+              "integratedOAuthIssuer": {
+                "const": true
+              }
+            },
+            "required": [
+              "integratedOAuthIssuer"
+            ]
+          }
+        },
+        "required": [
+          "features"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "sqlite",
+                  "postgres"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "features": {
+            "properties": {
+              "durableSubmission": {
+                "const": true
+              }
+            },
+            "required": [
+              "durableSubmission"
+            ]
+          }
+        },
+        "required": [
+          "features"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "sqlite",
+                  "postgres"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "features": {
+            "properties": {
+              "durableTasks": {
+                "const": true
+              }
+            },
+            "required": [
+              "durableTasks"
+            ]
+          }
+        },
+        "required": [
+          "features"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "sqlite",
+                  "postgres"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "features": {
+            "properties": {
+              "persistentMailboxSync": {
+                "const": true
+              }
+            },
+            "required": [
+              "persistentMailboxSync"
+            ]
+          }
+        },
+        "required": [
+          "features"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "sqlite",
+                  "postgres"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "features": {
+            "properties": {
+              "multiReplica": {
+                "const": true
+              }
+            },
+            "required": [
+              "multiReplica"
+            ]
+          }
+        },
+        "required": [
+          "features"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "backend": {
+                "const": "postgres"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "state": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "ephemeral",
+            "sqlite",
+            "postgres"
+          ]
+        },
+        "sqlite": {
+          "$ref": "#/$defs/sqlite"
+        },
+        "postgres": {
+          "$ref": "#/$defs/postgres"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "sqlite"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "sqlite"
+            ],
+            "not": {
+              "required": [
+                "postgres"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "postgres"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "postgres"
+            ],
+            "not": {
+              "required": [
+                "sqlite"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "ephemeral"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "sqlite"
+                  ]
+                },
+                {
+                  "required": [
+                    "postgres"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "sqlite": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "wal": {
+          "type": "boolean",
+          "const": true
+        },
+        "busyTimeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 120000
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "description": "Standalone/local-filesystem-only; must reject multiple active replicas on one database path."
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "dsnRef": {
+          "type": "string",
+          "pattern": "^secret://[^\\s]+$",
+          "minLength": 10,
+          "maxLength": 1024,
+          "description": "Abstract trusted secret resolver reference; never a raw credential value."
+        },
+        "tlsMode": {
+          "type": "string",
+          "enum": [
+            "verify-full"
+          ]
+        },
+        "poolSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dsnRef",
+        "tlsMode"
+      ]
+    },
+    "secretStore": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "encryptedFile",
+            "external",
+            "kubernetesSecret"
+          ]
+        },
+        "encryptedFile": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "wrappingKeyRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "wrappingKeyRef"
+          ]
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "driver": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "endpointRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            },
+            "credentialsRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "driver",
+            "endpointRef"
+          ]
+        },
+        "kubernetesSecret": {
+          "type": "object",
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63
+            },
+            "mountPath": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "namespace",
+            "mountPath"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "encryptedFile"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "encryptedFile"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "external"
+                  ]
+                },
+                {
+                  "required": [
+                    "kubernetesSecret"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "external"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "external"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "encryptedFile"
+                  ]
+                },
+                {
+                  "required": [
+                    "kubernetesSecret"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "kubernetesSecret"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "kubernetesSecret"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "encryptedFile"
+                  ]
+                },
+                {
+                  "required": [
+                    "external"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "blobStore": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "encryptedDirectory",
+            "s3"
+          ]
+        },
+        "encryptedDirectory": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "wrappingKeyRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "wrappingKeyRef"
+          ]
+        },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://"
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "credentialsRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            },
+            "encryptionKeyRef": {
+              "type": "string",
+              "pattern": "^secret://[^\\s]+$",
+              "minLength": 10,
+              "maxLength": 1024,
+              "description": "Abstract trusted secret resolver reference; never a raw credential value."
+            },
+            "prefix": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "endpoint",
+            "bucket",
+            "credentialsRef",
+            "encryptionKeyRef"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "encryptedDirectory"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "encryptedDirectory"
+            ],
+            "not": {
+              "required": [
+                "s3"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "s3"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "s3"
+            ],
+            "not": {
+              "required": [
+                "encryptedDirectory"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "disabled"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "encryptedDirectory"
+                  ]
+                },
+                {
+                  "required": [
+                    "s3"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "features": {
+      "type": "object",
+      "properties": {
+        "integratedOAuthIssuer": {
+          "type": "boolean",
+          "default": false
+        },
+        "durableSubmission": {
+          "type": "boolean",
+          "default": false
+        },
+        "durableTasks": {
+          "type": "boolean",
+          "default": false
+        },
+        "persistentMailboxSync": {
+          "type": "boolean",
+          "default": false
+        },
+        "persistInboundMail": {
+          "type": "boolean",
+          "const": false,
+          "description": "Raw inbound-mail persistence is not configured in the baseline schema; future explicit opt-in design needs separate encryption/retention contract."
+        },
+        "multiReplica": {
+          "type": "boolean",
+          "default": false
+        },
+        "searchIndex": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "integratedOAuthIssuer",
+        "durableSubmission",
+        "durableTasks",
+        "persistentMailboxSync",
+        "multiReplica",
+        "persistInboundMail"
+      ]
+    }
+  },
+  "x-corvi-design-notes": {
+    "authoritativeMailbox": "IMAP/JMAP provider remains source-of-truth for inbound mail.",
+    "secrets": "Provider OAuth refresh tokens and Corvi signing keys are not stored plaintext in SQL or config.",
+    "localOnlySQLite": true,
+    "defaults": "No raw inbound mail cache and no external DB mandatory for an ephemeral direct gateway.",
+    "authorization": "All caches/indexes/blobs require policy-scoped per-client/per-identity checks.",
+    "references": [
+      "docs/adr/0010-storage-and-durability.md",
+      "docs/adr/0009-corvi-oauth-and-identity-grants.md"
+    ]
+  }
+}

@@ -47,7 +47,7 @@ Reading, searching and listing are separately grantable; a credential need not h
 - For resource subscriptions, a single authenticated `subscriptions/listen` request may list **multiple permitted** `corvi:///identities/{identityId}/visible-mail` URIs, with an acknowledged authorized subset. No change event is emitted for a nonpermitted identity or for hidden-only changes.
 - Credential revocation, per-identity grant changes, and identity removal invalidate only the relevant authorizations and dependent state according to the configured revocation guarantees; they must never silently expand another identity's visibility.
 
-**Non-goal:** A token with permission to manage mail-provider resources or a broadly named OAuth scope does not automatically get personal message access. Identity grants always remain explicit and enforceable.
+**Non-goal:** A token with permission to manage mail-provider resources or a broadly named OAuth scope does not automatically get personal message access. Identity grants always remain explicit and enforceable. **Upstream mail-provider OAuth connections are separately authorized/account-bound administrative resources**, never client bearer tokens; see [ADR-0008](0008-interactive-upstream-oauth.md).
 
 ## 1. Resource model
 
@@ -127,7 +127,7 @@ The above operations remain the **same seven** public REST and MCP mail actions 
 The machine-readable source of truth is [`api/openapi.yaml`](../../api/openapi.yaml), using **OpenAPI 3.1** and JSON Schema 2020-12.
 
 - Prefix `/v1`; all JSON uses UTF-8; TLS is required on network-facing listeners or a trusted terminating proxy.
-- OAuth2/OIDC-issued and Corvi service bearer tokens are accepted only when explicitly configured; validate issuer, token audience for Corvi, expiry, authorized identity binding and action scopes on every request. Never accept provider or OAuth authorization-server credentials as Corvi mail API tokens.
+- OAuth2/OIDC-issued and Corvi service bearer tokens are accepted only when explicitly configured; validate issuer, token audience for Corvi, expiry, authorized identity binding and action scopes on every request. **Never accept upstream OAuth access/refresh tokens from Fastmail, Google, Microsoft or other providers as Corvi access credentials.** Never accept provider or OAuth authorization-server credentials as Corvi mail API tokens.
 - Errors use `application/problem+json` with a **stable `code`**, request `traceId`, generic `detail`, and appropriate HTTP status; never include subjects, OTPs, raw URLs or policy internals.
 - Include limits and `429` rate limiting; reject oversized bodies before expensive parsing.
 - Use `401` for unauthenticated, `403` for forbidden authorized actions, `404` for absent/hidden resources, `409` for stale cursor/idempotency conflicts, `422` for invalid requested send/recipient, and `503` for dependent upstream/policy unavailability.
@@ -177,7 +177,7 @@ These features **do not change** the shared REST application service or expose a
 
 ## 9. Control-plane and operational boundaries
 
-The public `/v1` and `/mcp` endpoints never expose mail-provider domain, mailbox, alias or plugin-management operations. A separate authenticated administrative API, possibly on a separate listener, will be specified independently. SMTP AUTH submission calls the same action/identity policy layer; it is not mapped into arbitrary MCP tool calls.
+The public `/v1` and `/mcp` endpoints never expose mail-provider domain, mailbox, alias, plugin-management **or interactive upstream OAuth connection** operations. An explicitly authorized separate admin/onboarding interface handles provider consent and account binding (ADR-0008). A separate authenticated administrative API, possibly on a separate listener, will be specified independently. SMTP AUTH submission calls the same action/identity policy layer; it is not mapped into arbitrary MCP tool calls.
 
 Rate limiting, tracing, error details and audit records must be partitioned by principal/identity without including private mail content or individual addresses as metric labels. Corvi's one-container standalone mode remains supported.
 

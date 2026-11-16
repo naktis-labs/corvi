@@ -104,7 +104,7 @@ Maintain Corvi's distinction between **physical account access** (`Mailbox`) and
 
 Build controlled MIME/email content from the authorized Corvi `MailIdentity` and a sanitized v1 plain-text send request. Validate the selected upstream JMAP `Identity` and From address, recipients, account submission capabilities, envelope sender and recipient list **before** creating/submitting an Email. `Email/set` may create a draft, but **`EmailSubmission/set` is the send operation**; a created draft alone is not a successful submission.
 
-- The existing Corvi idempotency key is bound to the principal, Corvi identity and canonical message. JMAP method-call IDs, creation IDs and state tokens are **not** durable exactly-once delivery guarantees. Persist intent/receipt when durable idempotency is promised, and reconcile state before repeating a call with ambiguous outcome.
+- The existing Corvi idempotency key is bound to the principal, Corvi identity and canonical message. JMAP method-call IDs, creation IDs and state tokens are **not** durable exactly-once delivery guarantees. Persist intent/receipt through Corvi's transactional submission store when durable idempotency is promised (ADR-0010), and reconcile state before repeating a call with ambiguous outcome.
 - Network interruption after an `EmailSubmission/set` may leave the result `unknown`. Do not automatically submit a second Email, retry blindly, or report delivered. A successful upstream EmailSubmission response means **upstream accepted for processing**, not remote recipient delivery.
 - A JMAP mail read token does not grant JMAP submission. Refresh-token rotation, revoked grants and insufficient scope trigger `needsReauthorization` and fail closed rather than falling back to a less secure credential. In `read: jmap`/`submission: smtp` mode use a **separately configured** SMTP credential with independent sender validation, never automatic fallback from failing JMAP submission.
 - If mailbox filing/cleanup fails after a successful submission, report the correct submission status and a separate cleanup diagnostic. Do not resend.
@@ -114,7 +114,7 @@ No claims of atomic send+file, exactly-once delivery or automatic ambiguous-outc
 
 ## 6. Synchronization, change streams and state
 
-Use JMAP's account-local `state` tokens for incremental reconciliation. State and search-query positions belong to **upstream account synchronization**, not to the public Corvi cursor; the latter remains opaque, per-caller/identity/policy-scoped and has its own expiry.
+Use JMAP's account-local `state` tokens for incremental reconciliation. Persist checkpoints through the selected data-plane state store (SQLite standalone / PostgreSQL HA when enabled; [ADR-0010](0010-storage-and-durability.md)), not the provider plugin or public MCP resources. State and search-query positions belong to **upstream account synchronization**, not to the public Corvi cursor; the latter remains opaque, per-caller/identity/policy-scoped and has its own expiry.
 
 - Handle `cannotCalculateChanges`, invalid state tokens, account permission changes, too-many-changes and JMAP capability loss with **bounded full resynchronization**, safe cursor invalidation and no stale privileged result reuse.
 - JMAP EventSource and RFC 8620 push reduce latency but are optional optimizations for the first implementation. Reconnection and polling must be supported. Subscribe only to authenticated, explicitly authorized upstream accounts and validate any server-provided push destination.

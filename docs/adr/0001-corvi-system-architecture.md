@@ -29,7 +29,7 @@ Corvi consists of independently deployable components:
 - **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads using native IMAP or JMAP, submits upstream via SMTP or JMAP, and owns optional operational state.
 - **Control plane:** Resolves provider settings, reconciles supported upstream resources, issues and rotates gateway configuration/credentials, and publishes versioned configuration snapshots. Optional for standalone deployments.
 - **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
-- **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
+- **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP or JMAP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
 - **Built-in generic transports:** IMAP, SMTP and JMAP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
 
 No component may silently add a hard dependency on another optional component.
@@ -75,7 +75,7 @@ The operator:
 - Generates or publishes normalized gateway configuration, and reports rollout status.
 - Configures mTLS certificate volumes and optional monitoring resources.
 
-It must **not** be called synchronously to authorize a message or supply an IMAP/SMTP endpoint during a mail request. Kubernetes admission webhooks, if introduced, are limited to Kubernetes resource admission and never participate in gateway traffic. Prefer OpenAPI schema and CEL validation where practical.
+It must **not** be called synchronously to authorize a message or supply an IMAP/SMTP/JMAP endpoint during a mail request. Kubernetes admission webhooks, if introduced, are limited to Kubernetes resource admission and never participate in gateway traffic. Prefer OpenAPI schema and CEL validation where practical.
 
 ### 1.4 Provider plugin model
 
@@ -89,7 +89,7 @@ Plugins advertise capabilities. Three independently usable capability families a
 
 Provider management is optional. A transport-only external plugin is valid. A management-only plugin is also valid if transport is not needed. For an external managed provider (such as Migadu), the plugin provides the IMAP/SMTP configuration; the gateway should not hard-code provider hostnames or protocol quirks.
 
-The built-in **generic IMAP/SMTP and native JMAP** implementations are not OCI plugins or additional containers. It uses direct configuration and in-process Rust calls, and can run without gRPC.
+The built-in **generic IMAP/SMTP and native JMAP** implementations are not OCI plugins or additional containers. They use direct configuration and in-process Rust calls, and can run without gRPC.
 
 Provider implementations must not depend on the Kubernetes API or assume they are deployed in a cluster. External providers may be used by a standalone control plane through a configured gRPC endpoint.
 
@@ -262,7 +262,7 @@ The initial adapter should remove the need to maintain a separate Terraform work
 
 **TLS is mandatory for all inter-component gRPC. Use mTLS for authenticated control-plane RPC connections.** This includes operator/controller ↔ external provider and control plane ↔ data-plane configuration publication. Validate certificate chain **and authorized workload identity** (DNS SAN and/or configured URI/SPIFFE-like identity). Never downgrade to plaintext on errors.
 
-Upstream IMAP/SMTP uses verified TLS by default (implicit TLS or STARTTLS as applicable) and must not silently fall back to cleartext. Public REST/MCP/SMTP listeners must support proper TLS termination.
+Upstream IMAP/SMTP requires verified TLS (implicit TLS or STARTTLS as applicable); JMAP requires HTTPS with verified TLS and controlled session-discovered endpoints. Neither transport may silently fall back to cleartext. Public REST/MCP/SMTP listeners must support proper TLS termination.
 
 In Kubernetes, integrate opportunistically with **cert-manager**:
 
@@ -286,7 +286,7 @@ Use OpenTelemetry instrumentation, with independent Prometheus pull and/or OTLP 
 Standardize bounded labels and metric families for:
 
 - Provider gRPC operations, latencies, errors, retries, rate limits, readiness and successful reconciliation.
-- Gateway HTTP/MCP/SMTP request volume/latency, authorization denials, upstream IMAP/SMTP failures and queue/synchronization health.
+- Gateway HTTP/MCP/SMTP request volume/latency, authorization denials, upstream IMAP/SMTP/JMAP failures and queue/synchronization health.
 - Configuration generation, last successful publication, rollout success, staleness and per-replica readiness.
 
 Use standard OpenTelemetry RPC semantic conventions where possible, rather than duplicating standard gRPC metrics. Propagate W3C trace context through provider gRPC; create spans for resource reconciliation and upstream provider HTTP calls. Never capture tokens, message bodies, authentication headers or mail contents in telemetry.
@@ -319,14 +319,14 @@ The operator can opportunistically create a ServiceMonitor when that CRD is avai
 | **Management-only** | No | Yes | As required | Optional |
 | **Full Kubernetes/GitOps** | Yes | Yes | As required | Yes |
 
-The acceptance target for **minimal standalone** is a single gateway process/container with a local configuration file and upstream IMAP/SMTP credentials. REST, MCP and authenticated SMTP submission work without Kubernetes, provider plugins, an external database, an OTel Collector or Prometheus. A bridge-dependent provider can also be accessed as **an existing locally available IMAP/SMTP bridge** using explicit verified configuration; automatically managing a bridge is optional and never a prerequisite for generic IMAP/SMTP users.
+The acceptance target for **minimal standalone** is a single gateway process/container with a local configuration file and upstream IMAP/SMTP credentials. The same process can optionally use native JMAP with an authorized HTTPS Session URL and token, without a mandatory plugin, controller or Kubernetes. REST, MCP and authenticated SMTP submission work without Kubernetes, provider plugins, an external database, an OTel Collector or Prometheus. A bridge-dependent provider can also be accessed as **an existing locally available IMAP/SMTP bridge** using explicit verified configuration; automatically managing a bridge is optional and never a prerequisite for generic IMAP/SMTP users.
 
 Kubernetes deployments independently scale gateway, controller/operator and provider plugins. NetworkPolicies, ServiceAccounts and runtime credentials must reinforce the control/data plane division. Existing mail operations must remain available during operator/provider/collector outages, within explicit snapshot and credential expiry policies.
 
 ## 10. Rejected approaches
 
 - **Operator webhook on the data-path:** rejected; creates availability coupling to Kubernetes infrastructure.
-- **Mandatory OCI plugin for generic IMAP/SMTP:** rejected; unnecessary process/container for the basic use case.
+- **Mandatory OCI plugin for generic IMAP/SMTP or standards-based JMAP:** rejected; unnecessary process/container for the built-in transport clients.
 - **Gateway querying provider RPC for each mail operation:** rejected; transport resolution belongs to configuration/control plane. Native JMAP is an in-process standard protocol client and does not require a provider RPC in the mail hot path.
 - **REST webhooks as provider plugin protocol:** rejected in favor of versioned protobuf/gRPC.
 - **Provider-specific mail transport built into the gateway:** rejected; upstream variations belong to provider resolver or generic config.

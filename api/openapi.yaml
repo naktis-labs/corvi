@@ -1,0 +1,724 @@
+openapi: "3.1.0"
+jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema"
+info:
+  title: "Corvi Public Mail API"
+  version: "0.1.0"
+  description: "Proposed email-first data-plane REST contract. Not implemented. Data-plane only; no provider administration. See docs/adr/0005-public-mail-api.md and docs/spec/mcp.md."
+tags:
+  - name: "Identities"
+    description: "Caller-visible mail identities."
+  - name: "Messages"
+    description: "Permission-scoped, filtered personal mail."
+  - name: "Sending"
+    description: "Authorized SMTP submission and status."
+security:
+  - bearerAuth: []
+paths:
+  "/v1/identities":
+    get:
+      tags:
+        - "Identities"
+      operationId: "listIdentities"
+      summary: "List identities authorized for this caller"
+      description: "Returns only identities visible to the authenticated principal; scope is rechecked on every request."
+      x-corvi-permission: "mail:identities:list"
+      responses:
+        "200":
+          description: "Authorized identities only."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/IdentitiesResponse"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/messages":
+    get:
+      tags:
+        - "Messages"
+      operationId: "listMessages"
+      summary: "List visible messages"
+      description: "Newest first. The listing does not reveal hidden messages, unfiltered counts or raw IMAP UIDs."
+      x-corvi-permission: "mail:messages:list"
+      parameters:
+        - "$ref": "#/components/parameters/identityId"
+        - "$ref": "#/components/parameters/limit"
+        - "$ref": "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: "Visible message summaries only."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/MessagePage"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/messages/search":
+    post:
+      tags:
+        - "Messages"
+      operationId: "searchMessages"
+      summary: "Search authorized message projections"
+      description: "Literal case-insensitive search over permitted text/subject only. No upstream raw hit count or policy bypass."
+      x-corvi-permission: "mail:messages:search"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: "Only visible matching messages."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/MessagePage"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/messages/{messageId}":
+    get:
+      tags:
+        - "Messages"
+      operationId: "getMessage"
+      summary: "Read a filtered message"
+      description: "A hidden message is indistinguishable from an absent message. Reading does not change upstream read flags."
+      x-corvi-permission: "mail:messages:read"
+      parameters:
+        - "$ref": "#/components/parameters/messageId"
+        - "$ref": "#/components/parameters/identityId"
+      responses:
+        "200":
+          description: "Policy-sanitized message."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/MailMessage"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/messages/{messageId}/attachments/{attachmentId}":
+    get:
+      tags:
+        - "Messages"
+      operationId: "getAttachment"
+      summary: "Download a permitted attachment"
+      description: "Re-evaluates identity, message and attachment disclosure policy at read time; never returns raw source MIME."
+      x-corvi-permission: "mail:attachments:read"
+      parameters:
+        - "$ref": "#/components/parameters/messageId"
+        - "$ref": "#/components/parameters/attachmentId"
+        - "$ref": "#/components/parameters/identityId"
+      responses:
+        "200":
+          description: "Authorized attachment bytes; actual Content-Type and filename are validated by Corvi."
+          content:
+            "application/octet-stream":
+              schema:
+                type: "string"
+                format: "binary"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/messages/send":
+    post:
+      tags:
+        - "Sending"
+      operationId: "sendMessage"
+      summary: "Submit text-only mail from an authorized identity"
+      description: "Idempotency key binds principal, identity and canonical payload; no arbitrary From or raw MIME. Replays return the existing submission."
+      x-corvi-permission: "mail:messages:send"
+      parameters:
+        - name: "Idempotency-Key"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            minLength: 1
+            maxLength: 128
+          description: "Caller-generated stable key for one intended send, retained at least 24 hours. Restart guarantees depend on idempotencyDurable."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/SendRequest"
+      responses:
+        "200":
+          description: "Already submitted/replayed receipt."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/Submission"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "202":
+          description: "Accepted for durable queueing/processing."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/Submission"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "422":
+          "$ref": "#/components/responses/Unprocessable"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+  "/v1/submissions/{submissionId}":
+    get:
+      tags:
+        - "Sending"
+      operationId: "getSubmission"
+      summary: "Retrieve a previously authorized send status"
+      description: "No other caller's submissions can be enumerated; upstream acceptance is not recipient delivery."
+      x-corvi-permission: "mail:submissions:read"
+      parameters:
+        - "$ref": "#/components/parameters/submissionId"
+        - "$ref": "#/components/parameters/identityId"
+      responses:
+        "200":
+          description: "Caller-visible submission status."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/Submission"
+          headers:
+            Cache-Control:
+              description: "Private mail data is non-cacheable by shared caches."
+              schema:
+                type: "string"
+                const: "private, no-store"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "429":
+          "$ref": "#/components/responses/TooManyRequests"
+        "503":
+          "$ref": "#/components/responses/Unavailable"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: "http"
+      scheme: "bearer"
+      description: "Corvi-authorized bearer credential or validated OAuth2 access token, scoped to identities and operations. Authorization is enforced server-side; never use provider credentials."
+  parameters:
+    identityId:
+      name: "identityId"
+      in: "query"
+      required: true
+      schema:
+        type: "string"
+        minLength: 1
+        maxLength: 256
+      description: "Caller-authorized opaque mail identity ID."
+    messageId:
+      name: "messageId"
+      in: "path"
+      required: true
+      schema:
+        type: "string"
+        minLength: 1
+        maxLength: 256
+      description: "Opaque Corvi identifier; existence does not imply authorization."
+    attachmentId:
+      name: "attachmentId"
+      in: "path"
+      required: true
+      schema:
+        type: "string"
+        minLength: 1
+        maxLength: 256
+      description: "Opaque Corvi identifier; existence does not imply authorization."
+    submissionId:
+      name: "submissionId"
+      in: "path"
+      required: true
+      schema:
+        type: "string"
+        minLength: 1
+        maxLength: 256
+      description: "Opaque Corvi identifier; existence does not imply authorization."
+    cursor:
+      name: "cursor"
+      in: "query"
+      required: false
+      schema:
+        type: "string"
+        minLength: 1
+        maxLength: 4096
+      description: "Opaque, policy- and principal-bound pagination cursor (15 minute lifetime)."
+    limit:
+      name: "limit"
+      in: "query"
+      required: false
+      schema:
+        type: "integer"
+        minimum: 1
+        maximum: 100
+        default: 25
+      description: "Page size; max 100."
+  responses:
+    Unauthorized:
+      description: "Authentication missing, invalid or expired."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    Forbidden:
+      description: "Authenticated principal lacks the requested operation on a known accessible identity."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    NotFound:
+      description: "Resource absent or hidden by identity/disclosure policy. These cases are intentionally indistinguishable."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    Conflict:
+      description: "Cursor stale/invalid, or idempotency key reused for different payload."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    Unprocessable:
+      description: "Invalid recipient, sender-policy or request semantics."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    TooManyRequests:
+      description: "Rate limited."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+      headers:
+        Retry-After:
+          description: "Seconds until a retry is appropriate when known."
+          schema:
+            type: "integer"
+            minimum: 0
+    Unavailable:
+      description: "Required upstream or policy evaluation unavailable; do not assume nonexistence."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+    BadRequest:
+      description: "Invalid request syntax or field constraints."
+      content:
+        "application/problem+json":
+          schema:
+            "$ref": "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: "object"
+      additionalProperties: false
+      properties:
+        type:
+          type: "string"
+          const: "about:blank"
+          description: "May instead be an error-specific URI."
+        title:
+          type: "string"
+        status:
+          type: "integer"
+          minimum: 400
+          maximum: 599
+        code:
+          type: "string"
+          description: "Stable uppercase Corvi error code."
+          examples:
+            - "CURSOR_STALE"
+        detail:
+          type: "string"
+          description: "Sanitized detail; never includes hidden message information."
+        traceId:
+          type: "string"
+          description: "Opaque request diagnostic ID."
+      required:
+        - "title"
+        - "status"
+        - "code"
+      description: "RFC 9457-style application/problem+json error response."
+    MailAddress:
+      type: "object"
+      additionalProperties: false
+      properties:
+        email:
+          type: "string"
+          format: "email"
+          maxLength: 320
+        name:
+          type: "string"
+          maxLength: 256
+      required:
+        - "email"
+    IdentityView:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        address:
+          type: "string"
+          format: "email"
+          maxLength: 320
+        displayName:
+          type: "string"
+          maxLength: 256
+        permissions:
+          type: "array"
+          items:
+            type: "string"
+            enum:
+              - "mail:identities:list"
+              - "mail:messages:list"
+              - "mail:messages:search"
+              - "mail:messages:read"
+              - "mail:attachments:read"
+              - "mail:messages:send"
+              - "mail:submissions:read"
+          uniqueItems: true
+      required:
+        - "id"
+        - "address"
+        - "permissions"
+      description: "Only identities and capabilities visible to the authenticated caller."
+    IdentitiesResponse:
+      type: "object"
+      additionalProperties: false
+      properties:
+        items:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/IdentityView"
+      required:
+        - "items"
+    AttachmentDescriptor:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        fileName:
+          type: "string"
+          maxLength: 255
+        contentType:
+          type: "string"
+          maxLength: 255
+        sizeBytes:
+          type: "integer"
+          minimum: 0
+      required:
+        - "id"
+        - "fileName"
+        - "contentType"
+        - "sizeBytes"
+      description: "Only attachments permitted to be listed are present. Fetch requires separate authorization."
+    MessageSummary:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        identityId:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        receivedAt:
+          type: "string"
+          format: "date-time"
+        conversationId:
+          type: "string"
+          maxLength: 256
+        subject:
+          type: "string"
+          maxLength: 998
+        from:
+          "$ref": "#/components/schemas/MailAddress"
+        snippet:
+          type: "string"
+          maxLength: 4096
+        isRead:
+          type: "boolean"
+      required:
+        - "id"
+        - "identityId"
+        - "receivedAt"
+      description: "Field omission is intentional; do not infer that a hidden field exists."
+    MailMessage:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        identityId:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        receivedAt:
+          type: "string"
+          format: "date-time"
+        conversationId:
+          type: "string"
+          maxLength: 256
+        subject:
+          type: "string"
+          maxLength: 998
+        from:
+          "$ref": "#/components/schemas/MailAddress"
+        to:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+        cc:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+        replyTo:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+        textBody:
+          type: "string"
+          maxLength: 2000000
+        htmlBody:
+          type: "string"
+          maxLength: 2000000
+          description: "Sanitized representation when permitted; may be omitted."
+        isRead:
+          type: "boolean"
+        attachments:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/AttachmentDescriptor"
+      required:
+        - "id"
+        - "identityId"
+        - "receivedAt"
+      description: "Filtered projection only. Never raw MIME or unredacted HTML."
+    MessagePage:
+      type: "object"
+      additionalProperties: false
+      properties:
+        items:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MessageSummary"
+        nextCursor:
+          type: "string"
+          maxLength: 4096
+      required:
+        - "items"
+      description: "No totalHits or upstream raw mailbox counts. Cursor only covers caller-visible results."
+    SearchRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        identityId:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        query:
+          type: "string"
+          minLength: 1
+          maxLength: 512
+          description: "Case-insensitive literal match over permitted subject/text projection."
+        limit:
+          type: "integer"
+          minimum: 1
+          maximum: 100
+          default: 25
+        cursor:
+          type: "string"
+          minLength: 1
+          maxLength: 4096
+      required:
+        - "identityId"
+        - "query"
+    SendRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        identityId:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        to:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+          minItems: 1
+          maxItems: 100
+        cc:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+          maxItems: 100
+        bcc:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/MailAddress"
+          maxItems: 100
+        subject:
+          type: "string"
+          maxLength: 998
+        textBody:
+          type: "string"
+          minLength: 1
+          maxLength: 1000000
+      required:
+        - "identityId"
+        - "to"
+        - "subject"
+        - "textBody"
+      description: "Text-only v1 send. From/envelope sender are derived from the authorized identity. No arbitrary raw MIME, HTML or outgoing attachments."
+    Submission:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        identityId:
+          type: "string"
+          minLength: 1
+          maxLength: 256
+        status:
+          type: "string"
+          enum:
+            - "queued"
+            - "submitted"
+            - "failed"
+            - "unknown"
+        createdAt:
+          type: "string"
+          format: "date-time"
+        updatedAt:
+          type: "string"
+          format: "date-time"
+        idempotencyDurable:
+          type: "boolean"
+          description: "Whether replay suppression survives a Corvi process restart."
+        failureCode:
+          type: "string"
+          maxLength: 100
+      required:
+        - "id"
+        - "identityId"
+        - "status"
+        - "createdAt"
+        - "idempotencyDurable"
+      description: "submitted means upstream SMTP accepted mail; not proof of recipient delivery. unknown is ambiguous and must not be blindly retried."

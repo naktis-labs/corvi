@@ -8,11 +8,10 @@ metadata:
   namespace: corvi-system
 spec:
   replicas: 2
-  # Binds this gateway to a selected subset of local Corvi MailIdentity objects,
-  # not all identities in the cluster and not a grant to every OAuth client.
-  mailIdentityRefs:
-    - name: personal
-    - name: service
+  # The gateway does not select identities directly. MailProvider.gatewayRef,
+  # Mailbox.providerRef, and MailIdentity.mailboxRef resolve its effective set.
+  # See mail-resource-chain.example.yaml for the four-resource example.
+  suspended: false  # true = management-only logical parent, no mail Pods
   listeners:
     http:
       enabled: true      # runtime port 8080, ClusterIP Service
@@ -39,5 +38,6 @@ spec:
 #   seccomp RuntimeDefault, all capabilities dropped, read-only rootfs
 # - No Pod Kubernetes service-account token, no arbitrary PodSpec/image
 # - Gateway workload is owned by CorviGateway, never also by Helm
+# - No inverse mailIdentityRefs; child-to-parent refs are the only source of truth
 # - Gateway API HTTPRoute is managed separately and targets the Service
 # - Secrets and state PVCs are pre-created/referenced and not owner-deleted

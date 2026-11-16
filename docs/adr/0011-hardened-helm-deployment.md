@@ -33,7 +33,7 @@ deploy/helm/
 | Profile | Controller | Kubernetes API token | Persistence/owner |
 | --- | --- | --- | --- |
 | `gateway` (Helm-direct) | App-template-owned Deployment or StatefulSet (when local SQLite) | **No** | Validated active snapshot, data-plane SQLite/PVC or external PostgreSQL |
-| `CorviGateway` (operator-managed) | Operator-owned Deployment/StatefulSet from namespaced custom resource | **No** | Same gateway runtime/storage, configured via [ADR-0012](0012-corvi-gateway-deployment-crd.md); its effective identities derive from `MailProvider.gatewayRef → Mailbox.providerRef → MailIdentity.mailboxRef` ([ADR-0013](0013-mail-resource-ownership-graph.md)), never an inverse list or Helm ownership |
+| `CorviGateway` (operator-managed) | Operator-owned Deployment/StatefulSet from namespaced custom resource | **No** | Same gateway runtime/storage, configured via [ADR-0012](0012-corvi-gateway-deployment-crd.md); its effective identities derive from **optional** `MailProvider.gatewayRef` and **required** `Mailbox.providerRef → MailIdentity.mailboxRef` ([ADR-0013](0013-mail-resource-ownership-graph.md)); unbound providers have no gateway workloads or mail access |
 | `oauth` | Optional Deployment, possibly same Rust binary but separate listener/Pod | **No** | OAuth SQLite/PVC or PostgreSQL, independent token/grant domain |
 | `operator` | Deployment with a dedicated SA | **Yes, strictly scoped** | **Kubernetes CRDs/status/Leases; no operator database** |
 | `provider-plugin` | Operator-managed digest-pinned Deployment/Job | **No** | Explicit provider-admin secret refs only; no arbitrary Kubernetes rights |
@@ -174,7 +174,7 @@ Operator RBAC design:
 11. Chart upgrade/rollback and CRD conversion are tested independently; no surprise credential/PVC deletion, accidental privileged new hook or restart of active bridge accounts.
 12. Admission policies and deployment scans refuse securityContext override via values, `rawResources`, arbitrary sidecars and unmanaged operator-generated workloads.
 13. Operator-managed **CorviGateway** instances produce the same restricted no-token Pods as app-template gateways; a Helm-owned resource cannot be adopted or modified by the operator, and SQLite single-writer mode cannot scale beyond one replica (ADR-0012).
-14. A provider is attached only by its required `spec.gatewayRef`; mailbox and identity child references are resolved recursively with no duplicated gateway lists, no implicit cross-gateway client access, and no unsafe reparenting (ADR-0013).
+14. A provider optionally attaches through **`spec.gatewayRef`**; absent gatewayRef means provider-management-only without any gateway Pod/CRD. Bound providers attach to one gateway, never two; mailbox/identity required parent refs resolve recursively, with no duplicated gateway lists or unsafe attach/detach/reparenting (ADR-0013).
 
 ## References
 

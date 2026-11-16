@@ -199,7 +199,7 @@ The same decision must be enforced on **every** route by which a client could in
 | Surface | Requirement |
 | --- | --- |
 | List/get | Exclude hidden messages before pagination; never return placeholder IDs |
-| Search | Match and rank only permitted projections, including server-side IMAP search post-filtering |
+| Search | Match and rank only permitted projections, including mandatory post-filtering of upstream IMAP **or JMAP** search candidates; use filtered indexing/safe scans where upstream search is not a complete superset |
 | Counts | Compute unread/total counts from visible messages only; no upstream raw count leakage |
 | Threads | Include only visible messages; do not reveal missing hidden members |
 | Attachments/raw source | Re-authorize every fetch; deny raw MIME/part URLs that bypass redaction |
@@ -283,6 +283,6 @@ Administrators may opt into controlled local debugging of private data, but that
 
 This model lets Corvi implement useful real filtering rules for personal mail, including hiding OTPs, excluding selected senders, redacting structured content and stripping attachments, **without confusing filtering with authorization or provider provisioning**.
 
-It also makes the limitations visible: heuristic content detection cannot certify the absence of secrets, and a shared IMAP inbox cannot provide strict per-alias confidentiality without trustworthy recipient provenance.
+It also makes the limitations visible: heuristic content detection cannot certify the absence of secrets, and a shared IMAP **or JMAP account** cannot provide strict per-alias confidentiality without trustworthy recipient provenance.
 
 The initial implementation remains mail-only and standalone-capable. This ADR records the intended semantics; it does not claim that the proposed CRD or classifiers already exist.

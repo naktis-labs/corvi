@@ -404,4 +404,4 @@ Required tests include:
 
 ## Consequences
 
-Corvi can run sandboxed WASM policy code in-process from either of two separately tagged OCI packages: native WASM OCI or Kubernetes image-volume OCI. It also integrates with external gRPC authorization systems while retaining a minimal single-container IMAP/SMTP deployment. The data plane remains the authority that **enforces** identity isolation and safe content projections. WASM and external PDPs are optional tools for expressing decisions, not a route around the privacy guarantees established by ADR-0003.
+Corvi can run sandboxed WASM policy code in-process from either of two separately tagged OCI packages: native WASM OCI or Kubernetes image-volume OCI. It also integrates with external gRPC authorization systems while retaining a minimal single-container IMAP/SMTP deployment and optional standalone native JMAP transport (ADR-0007). The data plane remains the authority that **enforces** identity isolation and safe content projections. WASM and external PDPs are optional tools for expressing decisions, not a route around the privacy guarantees established by ADR-0003.

@@ -16,7 +16,7 @@ The key boundaries are:
 
 - **Standalone data plane:** A gateway with built-in **IMAP/SMTP and native JMAP clients**, mail identities, content policies and scoped credentials. A minimal deployment needs only a process/container and configuration file.
 - **Optional control plane:** Provider configuration discovery, resource reconciliation, credential management and versioned configuration delivery. It is not in the message-processing path.
-- **Optional Kubernetes operator:** GitOps/CRD reconciliation and optional OCI provider plugin deployments, using Kubernetes CRD `spec`/`status`, Secret references and Leases as its sole persistent management state. **No operator PostgreSQL/SQLite database**.
+- **Optional Kubernetes operator:** GitOps/CRD reconciliation and optional OCI provider plugin deployments, using Kubernetes CRD `spec`/`status`, Secret references and Leases as its sole persistent management state. **No operator PostgreSQL/SQLite database**. Kubernetes deployment is built around the pinned bjw-s `app-template` chart with rootless, read-only, no-capabilities workloads and least-privilege component RBAC (ADR-0011).
 - **Provider plugins:** gRPC services for provider-specific transport resolution, administrative operations and upstream provider usage/health metrics. Migadu is the initial target.
 - **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
 - **Native JMAP:** Direct RFC 8620/8621 HTTPS access to mail, synchronization, blobs and email submission through the in-process Rust gateway, with Fastmail as the first interoperability target. JMAP does **not** require a bridge, proxy or provider plugin.
@@ -48,6 +48,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 **[ADR-0009: Corvi client OAuth and identity grants](docs/adr/0009-corvi-oauth-and-identity-grants.md)** establishes OAuth authorization-server/resource-server behavior, independent external OIDC login, per-MailIdentity consent through OAuth RAR, trusted client registration, machine credentials, refresh and revocation. The [proposed OAuth issuer/grant schema](api/corvi-oauth.schema.json) documents the design separately from provider OAuth in ADR-0008.
 
 **[ADR-0010: Storage and durability](docs/adr/0010-storage-and-durability.md)** establishes **Kubernetes as the control plane's source of truth**, with no operator database; SQLite and PostgreSQL are reserved for transactional OAuth/data-plane state, alongside independent secret custody, optional encrypted blobs and policy-safe mail caching. The [proposed storage schema](api/storage.schema.json) specifies backend choices and prevents durability-dependent features from using ephemeral state.
+
+**[ADR-0011: Hardened Kubernetes Helm design](docs/adr/0011-hardened-helm-deployment.md)** specifies a bjw-s `app-template` v5 packaging model, strict non-root UID/GID, `capabilities.drop: [ALL]`, `RuntimeDefault` seccomp, read-only root FS, no privilege escalation, default-deny networking, digest-pinned images and scoped Kubernetes API credentials **only for controllers that need them**. Illustrative [gateway](deploy/helm/app-template-gateway.values.yaml) and [operator](deploy/helm/app-template-operator.values.yaml) values are design examples, **not deployable releases**.
 
 ## Proposed public API specifications
 

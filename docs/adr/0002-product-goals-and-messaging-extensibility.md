@@ -6,7 +6,7 @@
 
 ## Context
 
-Corvi currently targets email, with a standalone IMAP/SMTP gateway, scoped REST/MCP access, an optional control plane and Kubernetes operator, and provider-specific gRPC plugins for administrative operations, transport resolution, and metrics.
+Corvi currently targets email, with a standalone gateway supporting generic IMAP/SMTP and **native JMAP** upstream transports, scoped REST/MCP access, an optional control plane and Kubernetes operator, and provider-specific gRPC plugins for administration, discovery, transport resolution, and metrics. JMAP is a mail protocol adapter, not the deferred multi-channel connector architecture; see [ADR-0007](0007-native-jmap-transport.md).
 
 We may eventually extend scoped access beyond email to personally owned or authorized communications carried through SMS, Matrix, Discord, or other messaging systems. That prospect should inform foundational interfaces, but **must not increase the implementation scope or minimum deployment requirements for the initial email release**.
 
@@ -48,14 +48,14 @@ Clients may receive dedicated send privileges under specific identities and reci
 4. **Keep native protocol semantics.** Do not force rooms, channels, SMS conversations, BCC, email aliases, attachments, message edits, reactions and encryption state into a lossy universal mailbox model.
 5. **Preserve actual upstream access constraints.** A connector must only claim capabilities and access/isolation guarantees it can enforce with trusted information from the underlying platform.
 6. **Reserve, but do not implement, a future connector interface.** A potential `corvi.connector.v1` gRPC namespace would handle live message transport/synchronization and is distinct from `corvi.provider.v1`, which handles control-plane provider discovery, resolution and administration. The namespace is a design placeholder, not a committed protocol.
-7. **Do not introduce new hard runtime dependencies.** The one-container generic IMAP/SMTP gateway, plugin-free path, and strict data/control-plane separation remain architectural invariants.
+7. **Do not introduce new hard runtime dependencies.** The one-container generic IMAP/SMTP gateway, the standalone native JMAP option, plugin-free path, and strict data/control-plane separation remain architectural invariants.
 
 ## Conceptual boundaries
 
 | Concern | Current email implementation | Possible future extension |
 | --- | --- | --- |
-| Scoped reading/search | Personal mailbox via IMAP, REST/MCP access policies | Authorized SMS, Matrix, Discord sources |
-| Sending | Identity-scoped SMTP submission or REST/MCP send | Capability-scoped channel sends |
+| Scoped reading/search | Personal mailbox via IMAP or JMAP, REST/MCP access policies | Authorized SMS, Matrix, Discord sources |
+| Sending | Identity-scoped SMTP or JMAP upstream submission via REST/MCP or SMTP AUTH | Capability-scoped channel sends |
 | Provisioning | Mail domains, managed mailboxes, aliases, forwarding, rewrites | Not assumed for other protocols |
 | Upstream provider administration | Optional provider gRPC plugins, initially Migadu | Only if justified by an actual use case |
 | Policy/credential system | Shared scoped access model | Reuse where semantics truly match |
@@ -63,7 +63,7 @@ Clients may receive dedicated send privileges under specific identities and reci
 
 A future **messaging connector** would be a data-plane integration, and could require a persistent connection, webhook ingress, synchronization state, or device/key management. A **provider-management plugin** is a control-plane integration. They can both use gRPC if out of process, but must not share privileges or create a hot-path dependency on the control plane.
 
-For example, a Matrix connector may require locally protected encryption keys and a synchronization cursor; a Discord connector may be constrained to a bot's actual channel permissions and message-content access; and SMS may require a paired-device bridge or provider service with authenticated inbound delivery. None of these details should contaminate the initial IMAP/SMTP implementation.
+For example, a Matrix connector may require locally protected encryption keys and a synchronization cursor; a Discord connector may be constrained to a bot's actual channel permissions and message-content access; and SMS may require a paired-device bridge or provider service with authenticated inbound delivery. None of these details should contaminate the email-first IMAP/SMTP or native JMAP implementations.
 
 ## Security consequences
 

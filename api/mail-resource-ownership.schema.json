@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/mail-resource-ownership/v1alpha1",
+  "title": "Corvi directional mail-resource parent reference contract (design only)",
+  "description": "Validates required same-namespace parent reference SHAPES for three namespaced Corvi resources. Not full Kubernetes CRD manifests; actual CRDs MUST declare structural OpenAPI v3, RBAC, status subresources and use controller lookups to enforce referential integrity. See ADR-0013.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/mailProvider"
+    },
+    {
+      "$ref": "#/$defs/mailbox"
+    },
+    {
+      "$ref": "#/$defs/mailIdentity"
+    }
+  ],
+  "$defs": {
+    "localRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name",
+        "namespace"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        }
+      },
+      "additionalProperties": true,
+      "description": "The actual Kubernetes metadata object includes Kubernetes-defined fields; this design schema asserts only name and namespace."
+    },
+    "mailProviderSpec": {
+      "type": "object",
+      "required": [
+        "gatewayRef"
+      ],
+      "properties": {
+        "gatewayRef": {
+          "$ref": "#/$defs/localRef"
+        }
+      },
+      "additionalProperties": true,
+      "description": "Reference contract ONLY; full spec fields and policy validation are defined in separate CRD designs."
+    },
+    "mailboxSpec": {
+      "type": "object",
+      "required": [
+        "providerRef"
+      ],
+      "properties": {
+        "providerRef": {
+          "$ref": "#/$defs/localRef"
+        }
+      },
+      "additionalProperties": true,
+      "description": "Reference contract ONLY; full spec fields and policy validation are defined in separate CRD designs."
+    },
+    "mailIdentitySpec": {
+      "type": "object",
+      "required": [
+        "mailboxRef"
+      ],
+      "properties": {
+        "mailboxRef": {
+          "$ref": "#/$defs/localRef"
+        }
+      },
+      "additionalProperties": true,
+      "description": "Reference contract ONLY; full spec fields and policy validation are defined in separate CRD designs."
+    },
+    "mailProvider": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "properties": {
+        "apiVersion": {
+          "const": "corvi.naktis.eu/v1alpha1"
+        },
+        "kind": {
+          "const": "MailProvider"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/mailProviderSpec"
+        }
+      },
+      "additionalProperties": true
+    },
+    "mailbox": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "properties": {
+        "apiVersion": {
+          "const": "corvi.naktis.eu/v1alpha1"
+        },
+        "kind": {
+          "const": "Mailbox"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/mailboxSpec"
+        }
+      },
+      "additionalProperties": true
+    },
+    "mailIdentity": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "properties": {
+        "apiVersion": {
+          "const": "corvi.naktis.eu/v1alpha1"
+        },
+        "kind": {
+          "const": "MailIdentity"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/mailIdentitySpec"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "x-corvi-ref-chain": {
+    "required": {
+      "MailProvider.spec.gatewayRef": "CorviGateway.metadata.name",
+      "Mailbox.spec.providerRef": "MailProvider.metadata.name",
+      "MailIdentity.spec.mailboxRef": "Mailbox.metadata.name"
+    },
+    "namespace": "All parent resources MUST exist in the same namespace as the child. Reject missing or cross-namespace refs at controller reconciliation, not by JSON Schema alone.",
+    "cardinality": "One parent per resource; parent can have many children.",
+    "graph": "Do not duplicate the inverse child lists in CorviGateway; derive children via indexes.",
+    "security": "Reparenting invalidates old gateway access first. References do not imply authorization. Do not cascade-delete upstream mail, Secrets or OAuth grants.",
+    "publication": "Atomic versioned gateway snapshots; gateway Pods do not query Kubernetes API.",
+    "configuration": "Helm-only/standalone installations use the same logical graph without requiring CRDs.",
+    "crdStatus": "Statuses are separate Kubernetes subresources; no secrets or raw message data in status."
+  }
+}

@@ -89,7 +89,6 @@ rbac:
             - mailpolicies
             - mailfilterpolicies
             - mailcredentials
-            - providerappcredentials  # provider-native app token issuance, no gateway-scoped grants
           verbs: [get, list, watch]
         - apiGroups: [corvi.naktis.eu, mail.corvi.naktis.eu]
           resources:
@@ -124,8 +123,11 @@ rbac:
           verbs: [get, create, update, patch]
         # Plugin ServiceAccounts must be pre-provisioned by privileged
         # chart/GitOps bootstrap, not created or changed by the operator.
-        # Token-producing resource status/finalizer writes and Secret publishing
-        # belong to a distinct, opt-in credential-publisher SA/Role (ADR-0014).
+        # Only one MailCredential CRD. CREATE/UPDATE semantic validation uses a
+        # separately installed read-only validating webhook (ADR-0014).
+        # It does NOT belong to this operator's Role or mint app credentials.
+        # Credential status/finalizers and generated Secret publishing belong
+        # to a distinct, opt-in credential-publisher SA/Role.
         # NO secrets/list, arbitrary secrets/get, roles/rolebindings,
         # cluster-scoped RBAC, pods/exec, serviceaccounts/token,
         # cluster-admin, impersonate, bind or escalate privileges.

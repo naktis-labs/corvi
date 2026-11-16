@@ -1,0 +1,91 @@
+# Design fixture: these CRDs and runtime reconciliation are NOT implemented.
+# Parent reference contract; MailProvider/Mailbox/MailIdentity contain only
+# reference fields here, not yet complete provider transport/address settings.
+# All four resources MUST live in one namespace. Never mirror child lists on gateway.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: primary
+  namespace: corvi-system
+spec:
+  replicas: 2
+  listeners:
+    http:
+      enabled: true
+    smtpSubmission:
+      enabled: false
+  authorization:
+    mode: external
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: postgres
+    connectionSecretRef:
+      name: corvi-runtime-db
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 256Mi
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: primary
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: migadu
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: primary
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: personal
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: fastmail
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: service
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: migadu
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: me
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: personal
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: noreply
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: service
+
+# CorviGateway "primary" serves "me" and "noreply" through the resolved
+# graph. A separate CorviGateway is not authorized to expose those identities.
+# Per-client OAuth grants still control which of the two identities it may use.
+# Provider administrative mode can use CorviGateway.spec.suspended: true
+# as a logical parent while running no gateway mail Pods/Service.

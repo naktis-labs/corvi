@@ -30,6 +30,16 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 **[ADR-0004: Pluggable policy evaluation with WASM and gRPC](docs/adr/0004-pluggable-grpc-policy-engines.md)** proposes sandboxed in-process WASM with **two OCI release variants** per policy: native WASM OCI (`-wasm`) for Corvi's embedded resolver, and Kubernetes image-volume-compatible OCI (`-volume`) for mounted policy files. Both variants contain identical WASM bytes and are pinned by their respective digests. External gRPC engines such as Cerbos remain optional, and the built-in evaluator is sufficient for standalone use.
 
+**[ADR-0005: Shared public mail API contract](docs/adr/0005-public-mail-api.md)** establishes consistent client-facing authorization, filtering, pagination, sending and idempotency semantics across REST and MCP.
+
+## Proposed public API specifications
+
+- **[OpenAPI 3.1 REST contract](api/openapi.yaml):** Versioned `/v1` endpoints, JSON schemas, permission annotations and error responses.
+- **[MCP 2026-07-28 specification](docs/spec/mcp.md):** Transport, OAuth resource-server behavior, tool mappings, filtering, safe sending and conformance rules.
+- **[Machine-readable MCP tool catalogue](api/mcp-tools.json):** Seven proposed tools with JSON Schema input/output definitions.
+
+All public API specifications are **proposed, not implemented**. The agent-facing MCP `SKILL.md` is a planned deliverable that will be maintained alongside the implemented tool contract.
+
 > **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
 
 The license, stable API contracts and development workflow will be established as the implementation progresses.

@@ -2,7 +2,7 @@
   "schemaVersion": "0.1.0",
   "targetMcpProtocol": "2026-07-28",
   "status": "proposed-not-implemented",
-  "description": "Proposed Corvi MCP mail tool definitions plus MRTR, scoped resource subscriptions, and Tasks extension metadata. This is a design/catalogue artifact, not an MCP tools/list wire response.",
+  "description": "Proposed Corvi MCP mail tools plus MRTR, context resources, subscriptions and Tasks metadata. Not a tools/list wire response. See api/mcp-resources.json for resource schemas.",
   "tools": [
     {
       "name": "mail_list_identities",
@@ -2512,6 +2512,26 @@
         "failed"
       ],
       "constraints": "Per-request extension opt-in, durable handle before response, per-read reauthorization and re-filtered results, cooperative cancellation."
+    },
+    "resources": {
+      "methods": [
+        "resources/list",
+        "resources/read"
+      ],
+      "catalogue": "api/mcp-resources.json",
+      "types": [
+        "corvi:///context/overview",
+        "corvi:///context/identities",
+        "corvi:///context/policy-summary",
+        "corvi:///identities/{identityId}/context",
+        "corvi:///identities/{identityId}/visible-mail"
+      ],
+      "privacy": "Only token-authorized concrete resource URIs and safe, reauthorized read-only projections. No raw message or private matcher resources.",
+      "cache": {
+        "ttlMs": 0,
+        "cacheScope": "private"
+      },
+      "listChanged": true
     }
   },
   "authorizationModel": {
@@ -2527,5 +2547,6 @@
     "singleTokenSupported": true,
     "isolation": "message IDs, cursors, attachments, send receipts, MRTR approval state, Task handles and subscription URIs must be bound to the selected identity",
     "subscriptions": "one subscriptions/listen may authorize multiple independent visible-mail resource URIs from the same token"
-  }
+  },
+  "resourceCatalog": "api/mcp-resources.json"
 }

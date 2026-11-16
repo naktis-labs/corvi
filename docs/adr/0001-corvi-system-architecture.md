@@ -208,13 +208,15 @@ Multiple data-plane replicas may serve reads, but synchronization ownership/chec
 
 ### 5.4 State ownership
 
+**Storage backend choice:** [ADR-0010](0010-storage-and-durability.md) specifies `ephemeral` for the minimal configured gateway, **SQLite** on local persistent storage for standalone OAuth/queue/sync/tasks, and **PostgreSQL** for multi-replica coordination. Secret custody (upstream OAuth refresh, provider passwords, signing keys) is a separate encrypted store; optional object storage and cached inbound mail are opt-in, with filtering and retention safeguards.
+
 Separate three categories:
 
 1. **Desired state:** GitOps/standalone files and control-plane reconciliation.
 2. **Active configuration:** Immutable versioned snapshots consumed and persisted by the data plane.
 3. **Operational message state:** Queues, mailbox checkpoints, indexes, idempotency records and relevant delivery/audit events, owned by the data plane.
 
-A durable database/queue is optional for the single-process synchronous path. It may become required for explicitly enabled queued delivery, indexing or multi-replica coordination. The control plane never owns the SMTP queue.
+A durable database/queue is optional for the single-process synchronous path. It becomes required for the integrated OAuth issuer, durable tasks/queue, or persistent synchronization; **SQLite embedded mode is enough for one standalone instance**, while multi-replica coordination requires PostgreSQL (ADR-0010). The control plane never owns the outbound SMTP/JMAP submission queue.
 
 ## 6. Declarative management and CRDs
 
@@ -361,7 +363,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 ## 13. Architectural invariants to test in CI
 
-- A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
+- A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
 - Rejected config snapshots preserve the previous valid generation; partial rollouts are reported.
@@ -376,6 +378,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - Native JMAP transports work with no controller/plugin/Kubernetes, validate Session URLs/account capabilities, use the same disclosure filters as IMAP, and never automatically fall back to SMTP after ambiguous JMAP sends.
 - Scraping metrics never triggers upstream API calls; metrics/OTLP outages do not block provisioning or mail operations.
 - Provider usage metrics report unavailable quotas as unsupported, not fabricated.
+- The integrated OAuth issuer, durable queue and Tasks reject ephemeral-only storage; SQLite is local/single-instance, while active/active replicas require PostgreSQL. Raw upstream mail never enters a client-visible index or shared cache before identity/disclosure filtering (ADR-0010).
 - OCI provider bridge requirements cannot deploy untrusted containers or request arbitrary secrets; bridge capability discovery is validated against administrator-approved runtime profiles.
 - Existing local bridges work without Kubernetes; loopback-only bridges are not silently exposed as routable Services; bridge secret/state and TLS identity remain isolated.
 - Kubernetes CSI/Certificate fallback does not introduce trust-manager or certificate downgrade dependencies.
@@ -389,7 +392,7 @@ These are deliberately left for follow-up ADRs rather than assumed settled:
 - Credential custody, encrypted secret-at-rest implementation, rotation and emergency revocation distribution. Corvi's own OAuth issuer/RAR grant store, CIMD, client consent, refresh-token rotation, external OIDC federation and access-token revocation are specified in [ADR-0009](0009-corvi-oauth-and-identity-grants.md), separate from upstream provider OAuth in ADR-0008. **Provider OAuth browser/CLI consent, PKCE, issuer/redirect safeguards, token refresh/rotation and independent client/connection revocation** follow [ADR-0008](0008-interactive-upstream-oauth.md).
 - Provider extension fields and admission/defaulting strategy in CRDs.
 - Exact trusted recipient provenance mechanisms achievable with Migadu; criteria for verified isolation.
-- State backend for optional queue/index/synchronizer and cross-replica ownership.
+- State backend for optional queue/index/synchronizer and cross-replica ownership: **SQLite standalone and PostgreSQL HA**, domain-focused state stores and encrypted secret custody are established in [ADR-0010](0010-storage-and-durability.md); exact migrations and driver versions are implementation concerns.
 - Event delivery contract and retention semantics.
 - Telemetry naming stability, collector ownership in HA, privacy policy and alert thresholds.
 - License, threat-model review, support/versioning matrix, release packaging and public API stability policy.

@@ -1,0 +1,505 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/corvi-gateway/v1alpha1",
+  "title": "Proposed CorviGateway Kubernetes custom resource model",
+  "description": "Design-only JSON Schema for an operator-managed gateway workload. NOT the actual structural Kubernetes CRD YAML or an implemented controller. See ADR-0012. Raw PodSpec/securityContext/Image fields are intentionally absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.eu/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "CorviGateway"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        }
+      },
+      "required": [
+        "name",
+        "namespace"
+      ]
+    },
+    "spec": {
+      "$ref": "#/$defs/spec"
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    }
+  },
+  "$defs": {
+    "namespacedLocalRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ]
+    },
+    "requests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^(?:[0-9]+m|[0-9]+(?:\\.[0-9]+)?)$"
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$"
+        }
+      },
+      "required": [
+        "cpu",
+        "memory"
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "memory": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$"
+        },
+        "ephemeral-storage": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$"
+        }
+      },
+      "required": [
+        "memory"
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "$ref": "#/$defs/requests"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        }
+      },
+      "required": [
+        "requests",
+        "limits"
+      ]
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "external",
+            "embedded"
+          ]
+        },
+        "configSecretRef": {
+          "$ref": "#/$defs/namespacedLocalRef"
+        }
+      },
+      "required": [
+        "mode",
+        "configSecretRef"
+      ]
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "ephemeral",
+            "sqlite",
+            "postgres"
+          ]
+        },
+        "existingClaimName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "connectionSecretRef": {
+          "$ref": "#/$defs/namespacedLocalRef"
+        }
+      },
+      "required": [
+        "backend"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "sqlite"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "existingClaimName"
+            ],
+            "not": {
+              "required": [
+                "connectionSecretRef"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "postgres"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "required": [
+              "connectionSecretRef"
+            ],
+            "not": {
+              "required": [
+                "existingClaimName"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "ephemeral"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "existingClaimName"
+                  ]
+                },
+                {
+                  "required": [
+                    "connectionSecretRef"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 1
+        },
+        "mailIdentityRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namespacedLocalRef"
+          },
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "description": "Explicit same-namespace MailIdentity names; no wildcard selection."
+        },
+        "listeners": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "http": {
+              "$ref": "#/$defs/listener"
+            },
+            "smtpSubmission": {
+              "$ref": "#/$defs/listener"
+            }
+          },
+          "required": [
+            "http",
+            "smtpSubmission"
+          ],
+          "anyOf": [
+            {
+              "properties": {
+                "http": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "smtpSubmission": {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "authorization": {
+          "$ref": "#/$defs/authorization"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        }
+      },
+      "required": [
+        "replicas",
+        "mailIdentityRefs",
+        "listeners",
+        "authorization",
+        "state",
+        "resources"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "backend": {
+                    "const": "sqlite"
+                  }
+                },
+                "required": [
+                  "backend"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "replicas": {
+                "const": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authorization": {
+                "properties": {
+                  "mode": {
+                    "const": "embedded"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            },
+            "required": [
+              "authorization"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "backend": {
+                    "enum": [
+                      "sqlite",
+                      "postgres"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "observedGeneration": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "desiredReplicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readyReplicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "configurationRevision": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "workloadKind": {
+          "type": "string",
+          "enum": [
+            "Deployment",
+            "StatefulSet"
+          ]
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Accepted",
+                  "Resolved",
+                  "Ready",
+                  "Progressing",
+                  "Degraded"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "True",
+                  "False",
+                  "Unknown"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "observedGeneration": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "lastTransitionTime": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "type",
+              "status",
+              "lastTransitionTime"
+            ]
+          },
+          "maxItems": 16
+        }
+      },
+      "description": "Controller-owned Kubernetes status subresource; never contains credentials, tokens or message data."
+    }
+  },
+  "x-corvi-kubernetes-crd": {
+    "group": "corvi.naktis.eu",
+    "scope": "Namespaced",
+    "plural": "corvigateways",
+    "singular": "corvigateway",
+    "kind": "CorviGateway",
+    "version": "v1alpha1",
+    "statusSubresource": true,
+    "scaleSubresource": {
+      "specReplicasPath": ".spec.replicas",
+      "statusReplicasPath": ".status.replicas",
+      "labelSelectorPath": ".status.labelSelector"
+    },
+    "validation": "Actual CRD must use structural OpenAPI v3 and CEL for replicas/storage, embedded OAuth durability, and same-namespace refs, plus reconciler validation.",
+    "workloadOwnership": "Mutually exclusive helmDirect and operatorManaged per Deployment/Service.",
+    "security": "All Pods fixed rootless, cap-drop ALL, readOnlyRootFilesystem, RuntimeDefault, no Kubernetes API token.",
+    "image": "Operator-approved signed immutable digest, not CRD-provided arbitrary image."
+  }
+}

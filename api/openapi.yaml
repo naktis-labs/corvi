@@ -3,14 +3,14 @@ jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema"
 info:
   title: "Corvi Public Mail API"
   version: "0.1.0"
-  description: "Proposed email-first data-plane REST contract. Not implemented. Data-plane only; no provider administration. See docs/adr/0005-public-mail-api.md and docs/spec/mcp.md."
+  description: "Proposed email-first data-plane REST contract. Transport-neutral across upstream IMAP/SMTP and native JMAP (ADR-0007). Not implemented. Data-plane only; no provider administration. See docs/adr/0005-public-mail-api.md and docs/spec/mcp.md."
 tags:
   - name: "Identities"
     description: "Caller-visible mail identities."
   - name: "Messages"
     description: "Permission-scoped, filtered personal mail."
   - name: "Sending"
-    description: "Authorized SMTP submission and status."
+    description: "Authorized provider-neutral upstream SMTP or JMAP submission and status."
 security:
   - bearerAuth: []
 paths:
@@ -722,4 +722,4 @@ components:
         - "status"
         - "createdAt"
         - "idempotencyDurable"
-      description: "submitted means upstream SMTP accepted mail; not proof of recipient delivery. unknown is ambiguous and must not be blindly retried."
+      description: "submitted means the selected upstream SMTP or JMAP EmailSubmission service accepted mail; not proof of recipient delivery. unknown is ambiguous and must not be blindly retried."

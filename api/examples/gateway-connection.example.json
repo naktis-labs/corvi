@@ -1,0 +1,49 @@
+{
+  "version": "corvi.naktis.eu/connection/v1",
+  "mode": "gateway",
+  "revision": "example-generation-42",
+  "grants": [
+    {
+      "identity": {
+        "id": "me",
+        "address": "me@example.test"
+      },
+      "actions": [
+        "mail:messages:list",
+        "mail:messages:read"
+      ]
+    },
+    {
+      "identity": {
+        "id": "noreply",
+        "address": "noreply@example.test"
+      },
+      "actions": [
+        "mail:messages:send"
+      ]
+    }
+  ],
+  "services": {
+    "rest": {
+      "url": "https://mail.example.test/v1"
+    },
+    "mcp": {
+      "url": "https://mail.example.test/mcp"
+    }
+  },
+  "auth": {
+    "oauth": {
+      "type": "oauth2_client_credentials",
+      "issuer": "https://auth.example.test",
+      "tokenUrl": "https://auth.example.test/oauth/token",
+      "clientId": "REDACTED-EXAMPLE-CLIENT-ID",
+      "clientSecret": "REDACTED-EXAMPLE-CLIENT-SECRET",
+      "resource": "https://mail.example.test",
+      "scopes": [
+        "mail:messages:list",
+        "mail:messages:read",
+        "mail:messages:send"
+      ]
+    }
+  }
+}

@@ -67,6 +67,31 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 All public API specifications are **proposed, not implemented**. The agent-facing MCP `SKILL.md` is a planned deliverable that will be maintained alongside the implemented tool contract.
 
-> **Project status:** Architecture stage. The ADR describes intended behavior and does not imply completed implementations.
+## Implementation
+
+The Rust implementation has started. It is a Cargo workspace, and the crate layout follows the phase order in [ADR-0001 section 12](docs/adr/0001-corvi-system-architecture.md):
+
+```text
+crates/
+  mail-core/        Provider-neutral types: identities, actions, normalized messages
+  mail-policy/      The disclosure filter engine (ADR-0003)
+  mail-imap/        IMAP upstream client
+  mail-smtp/        SMTP upstream client and submission listener
+  mail-jmap/        Native JMAP client (ADR-0007)
+  mail-api/         REST and MCP public surface (ADR-0005)
+  mail-admin/       Provider administration interface
+  mail-operator/    Kubernetes reconciler
+  provider-migadu/  Migadu management adapter
+```
+
+**`mail-core` and `mail-policy` are implemented.** The policy engine evaluates ADR-0003's disclosure gate locally, with no I/O: it has no Kubernetes client, no provider plugin client and no network access, which is what makes the "control plane and provider plugins may be entirely unavailable" guarantee structural rather than aspirational. It produces typed decisions (`hide`/`show`/`redact`), merges rendering restrictions conservatively, treats an unevaluable rule as indeterminate rather than clean, and emits the only projection a scoped caller may receive.
+
+**[ADR-0015: Rust workspace layout and the policy engine boundary](docs/adr/0015-rust-workspace-and-policy-engine.md)** records the crate rules, the decision semantics and the dependency invariant that keeps the data plane free of operator and provider-management types.
+
+```console
+$ cargo test --workspace
+```
+
+> **Project status:** Architecture and early implementation. The ADRs describe intended behavior; the crates that exist implement a stated subset of it, and the rest is not yet written.
 
 The license, stable API contracts and development workflow will be established as the implementation progresses.

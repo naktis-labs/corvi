@@ -5,6 +5,7 @@
 - **Project:** Corvi (Naktis Labs)
 - **Scope:** Standalone mail gateway, optional control plane and Kubernetes operator, provider plugin ecosystem, identity and policy enforcement, telemetry
 - **Decision owners:** Project maintainers
+- **Related:** [ADR-0015: Rust workspace layout and the policy engine boundary](0015-rust-workspace-and-policy-engine.md)
 
 ## Context
 
@@ -360,6 +361,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 ## 12. Implementation sequence
 
 1. **Foundations:** Repository structure, provider-neutral config model, policy engine, built-in IMAP/SMTP transport, single-process REST/MCP/SMTP listeners.
+   - The Cargo workspace layout and the `mail-core`/`mail-policy` crate boundary are recorded in [ADR-0015](0015-rust-workspace-and-policy-engine.md); those two crates are implemented.
    - Specify REST and MCP public contracts and ship a maintained **agent-facing MCP skill** (`SKILL.md`, examples and usage/safety guidance) once the MCP tools are implemented; test the skill against the actual server rather than documenting speculative tool names.
 2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification. Implement Corvi OAuth identity grants and login/consent/token flows (ADR-0009); the issuer can be embedded or federate with a trusted external OIDC login.
 3. **Native JMAP:** Implement RFC 8620 Session/capability discovery, JMAP mail reader, attachment reader, filtered synchronization and JMAP submission. Test Fastmail and mixed IMAP/JMAP identities without extending public REST/MCP methods (ADR-0007).
@@ -374,7 +376,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 
 - A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state. Helm uses [ADR-0011](0011-hardened-helm-deployment.md) rootless, readonly, no-capabilities, RuntimeDefault and narrow token/RBAC defaults.
 - A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
-- Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
+- Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules. The `mail-core` and `mail-policy` crates are implemented with no Kubernetes, network or provider-plugin dependency, making this invariant structural from the start (ADR-0015).
 - The graph `MailIdentity.spec.mailboxRef → Mailbox.spec.providerRef → MailProvider.spec.gatewayRef? → CorviGateway` requires mailbox/provider refs, while gatewayRef is optional. Unbound providers reconcile administrative resources without any gateway; bound providers resolve to exactly one gateway. No inverse identity list or implicit sharing; reparenting/detaching revokes old access and attachment requires verified grants (ADR-0013).
 - A CorviGateway-owned workload and a Helm-owned gateway workload can coexist in a cluster but may **never share workload ownership**. Operator-generated gateways use a no-token ServiceAccount and the same rootless, no-capabilities, read-only-root security policy (ADR-0012).
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.

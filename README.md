@@ -20,6 +20,7 @@ The key boundaries are:
 - **Provider plugins:** gRPC services for provider-specific transport resolution, administrative operations and upstream provider usage/health metrics. Migadu is the initial target.
 - **Bridge-backed providers:** Optional local IMAP/SMTP bridge runtimes for providers such as Proton Mail. OCI plugin metadata provides deployment hints, authenticated discovery validates bridge requirements, and the operator can manage a trusted bridge or connect to an existing local one.
 - **Native JMAP:** Direct RFC 8620/8621 HTTPS access to mail, synchronization, blobs and email submission through the in-process Rust gateway, with Fastmail as the first interoperability target. JMAP does **not** require a bridge, proxy or provider plugin.
+- **Interactive upstream OAuth:** Connect supported mail providers through their browser consent screen using Authorization Code + PKCE; support registered hosted callbacks, local CLI-assisted loopback login and provider-supported device grants, with encrypted refresh tokens and separate Corvi client credentials. Provider-specific OAuth registration restrictions remain explicit.
 - **Observability:** OpenTelemetry and Prometheus/OTLP, with provider plugins acting as exporters. TLS/mTLS is mandatory for internal gRPC, and Kubernetes may opportunistically use cert-manager's CSI driver.
 
 **Namespace convention:** Corvi-owned API groups and metadata use the `naktis.eu` domain, generally under `corvi.naktis.eu` (for example, `mail.corvi.naktis.eu`). OCI reverse-DNS annotation keys use `eu.naktis.corvi.*`. Third-party registry hosts and documentation URLs retain their original domains.
@@ -39,6 +40,8 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 **[ADR-0006: Provider-managed local mail transport bridges](docs/adr/0006-local-transport-bridges.md)** specifies direct versus existing/managed bridge topology, OCI metadata-assisted discovery, validated runtime provisioning, local endpoint/TLS security and Proton Mail Bridge compatibility constraints. A [proposed JSON Schema](api/provider-transport-bridge.schema.json) describes typed bridge prerequisites.
 
 **[ADR-0007: Native JMAP mail transport](docs/adr/0007-native-jmap-transport.md)** adds provider-neutral JMAP reading, searching, synchronization and `EmailSubmission` sending alongside IMAP/SMTP, while preserving identity grants and disclosure filtering. The [transport JSON Schema](api/mail-transport.schema.json) models separate read/submission protocols and prohibits implicit protocol fallback.
+
+**[ADR-0008: Interactive upstream provider OAuth](docs/adr/0008-interactive-upstream-oauth.md)** defines browser/CLI provider consent, PKCE/issuer/redirect protections, token storage and refresh, upstream account binding and the separation from client-facing Corvi OAuth. A [proposed provider OAuth descriptor schema](api/upstream-oauth.schema.json) specifies enrollment capability discovery, client registration and supported protocol mechanisms.
 
 ## Proposed public API specifications
 

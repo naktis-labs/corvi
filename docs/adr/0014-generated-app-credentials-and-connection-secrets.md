@@ -9,7 +9,7 @@
 
 ## Decision
 
-Use **one namespaced `MailCredential` CRD**, with **one validating admission webhook** for its semantic invariants. **Do not create a `ProviderAppCredential` CRD or a second credential type.** The effective credential authority and connection route are **derived from the existing MailIdentity → Mailbox → MailProvider → optional CorviGateway reference graph** (ADR-0013), not from two competing CRDs or a user-controlled `mode` selector.
+Use **one namespaced `MailCredential` CRD**, with **one validating admission webhook** for its semantic invariants. **Do not create a separate provider-app credential CRD or a second credential type.** The effective credential authority and connection route are **derived from the existing MailIdentity → Mailbox → MailProvider → optional CorviGateway reference graph** (ADR-0013), not from two competing CRDs or a user-controlled `mode` selector.
 
 Every `MailCredential` declares:
 - `spec.shape: mcp | rest | smtp`, **exactly one protocol shape**, one generated Secret.
@@ -164,7 +164,7 @@ The optional webhook, publisher, and their RBAC/install wiring are **future impl
 
 ## 7. Acceptance tests
 
-1. **Exactly one MailCredential CRD.** Repository, RBAC, resource examples and schema contain no `ProviderAppCredential` API kind or second credential CRD.
+1. **Exactly one MailCredential CRD.** Repository, RBAC, resource examples and schema contain no second credential API kind or CRD.
 2. Admission CREATE/UPDATE for bound MailIdentity + nonempty permissions succeeds only for verified gateway/shape; bound Mailbox is denied; missing gateway permissions denied.
 3. Admission **rejects gatewayless `permissions`** with `GatewayRequiredForScopedCredential`, including empty-list presence. For an unbound Mailbox or properly isolated MailIdentity **without permissions**, admission permits only provider-native supported shape and exact native granularity.
 4. A provider exposing only whole-mailbox app tokens rejects identity target as `UnsupportedCredentialGranularity`. Provider without independent app-token issuance or actual requested MCP/REST/SMTP endpoint fails closed.

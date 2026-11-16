@@ -226,7 +226,7 @@ Recommended pipeline:
 
 A metadata-only list cannot optimistically expose headers for a message whose eligibility depends on body content. Use a classification cache or scan-on-demand; if scanning is unavailable, follow `onIndeterminate`.
 
-Any cached projection or precomputed index must be partitioned by the effective principal/identity and policy fingerprint or equivalent non-bypassable access context. Cache keys should account for **message revision, classifier version, filter policy generation, identity isolation evidence and effective grants**. Invalidate or recompute on policy/revocation changes and upstream message updates. Do not expose a globally indexed unredacted snippet to a scoped client.
+Any cached projection or precomputed index must be partitioned by the effective principal/identity and policy fingerprint or equivalent non-bypassable access context. Optional persistent caching/indexing follows [ADR-0010](0010-storage-and-durability.md): no raw inbound MIME storage by default, encryption and explicit retention for opted-in content, and no direct S3/blob URI bypass of per-request authorization. Cache keys should account for **message revision, classifier version, filter policy generation, identity isolation evidence and effective grants**. Invalidate or recompute on policy/revocation changes and upstream message updates. Do not expose a globally indexed unredacted snippet to a scoped client.
 
 Implement message-level decisions consistently for streamed and paginated responses. Filtering must never create an untrusted asynchronous "unfiltered first, sanitize later" window.
 

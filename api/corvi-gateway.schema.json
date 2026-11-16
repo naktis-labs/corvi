@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://corvi.naktis.eu/schemas/corvi-gateway/v1alpha1",
   "title": "Proposed CorviGateway Kubernetes custom resource model",
-  "description": "Design-only JSON Schema for an operator-managed gateway workload. NOT the actual structural Kubernetes CRD YAML or an implemented controller. See ADR-0012. Raw PodSpec/securityContext/Image fields are intentionally absent.",
+  "description": "Design-only JSON Schema for operator-managed Corvi gateway runtime. Provider-owned subtree is resolved via MailProvider.spec.gatewayRef -> Mailbox.spec.providerRef -> MailIdentity.spec.mailboxRef; no inverse identity selector in gateway. See ADR-0012/0013. NOT a structural Kubernetes CRD manifest.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -258,16 +258,6 @@
           "maximum": 32,
           "default": 1
         },
-        "mailIdentityRefs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/namespacedLocalRef"
-          },
-          "minItems": 1,
-          "maxItems": 128,
-          "uniqueItems": true,
-          "description": "Explicit same-namespace MailIdentity names; no wildcard selection."
-        },
         "listeners": {
           "type": "object",
           "additionalProperties": false,
@@ -322,11 +312,15 @@
         },
         "resources": {
           "$ref": "#/$defs/resources"
+        },
+        "suspended": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, retain a logical CorviGateway/ownership target and reconcile provider administration but do not run gateway mail workloads or expose its listeners. Effective mail identities remain unavailable. No implicit provider/identity deletion."
         }
       },
       "required": [
         "replicas",
-        "mailIdentityRefs",
         "listeners",
         "authorization",
         "state",
@@ -505,6 +499,9 @@
     "validation": "Actual CRD must use structural OpenAPI v3 and CEL for replicas/storage, embedded OAuth durability, and same-namespace refs, plus reconciler validation.",
     "workloadOwnership": "Mutually exclusive helmDirect and operatorManaged per Deployment/Service.",
     "security": "All Pods fixed rootless, cap-drop ALL, readOnlyRootFilesystem, RuntimeDefault, no Kubernetes API token.",
-    "image": "Operator-approved signed immutable digest, not CRD-provided arbitrary image."
+    "image": "Operator-approved signed immutable digest, not CRD-provided arbitrary image.",
+    "referenceGraph": "CorviGateway <- MailProvider.spec.gatewayRef <- Mailbox.spec.providerRef <- MailIdentity.spec.mailboxRef; same namespace; exactly one upstream parent per resource.",
+    "effectiveIdentities": "Reverse-index only validated provider/mailbox/identity references and publish atomic least-privilege configuration snapshots; never use a user-maintained gateway mailIdentityRefs list.",
+    "suspendedMode": "Set spec.suspended=true for operator-only provider administration without a running mail gateway. Provider binding and CRD remain, but no gateway Pods/Services or mail access."
   }
 }

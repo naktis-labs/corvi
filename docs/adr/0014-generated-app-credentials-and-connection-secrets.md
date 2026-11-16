@@ -5,7 +5,7 @@
 - **Scope:** Single application-credential custom resource, gateway/provider-specific validation, provider-native issuance, custom Secret name/annotations and explicit MCP/REST/SMTP connections
 - **Related:** [ADR-0001](0001-corvi-system-architecture.md), [ADR-0005](0005-public-mail-api.md), [ADR-0008](0008-interactive-upstream-oauth.md), [ADR-0009](0009-corvi-oauth-and-identity-grants.md), [ADR-0010](0010-storage-and-durability.md), [ADR-0011](0011-hardened-helm-deployment.md), [ADR-0013](0013-mail-resource-ownership-graph.md)
 - **Design schema:** [MailCredential and flat Secret key contract](../../api/generated-connection-secret.schema.json)
-- **Examples:** [Same-CRD credential resources](../../deploy/examples/generated-connection-secrets.example.yaml), [gateway MCP key/value fixture](../../api/examples/gateway-connection.example.json), [direct provider SMTP key/value fixture](../../api/examples/provider-direct-connection.example.json)
+- **Examples:** [Same-CRD credential resources](../../deploy/examples/generated-connection-secrets.example.yaml), [webhook + read-only RBAC fixture](../../deploy/examples/mailcredential-validating-webhook.example.yaml), [gateway MCP key/value fixture](../../api/examples/gateway-connection.example.json), [direct provider SMTP key/value fixture](../../api/examples/provider-direct-connection.example.json)
 
 ## Decision
 

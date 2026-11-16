@@ -27,7 +27,7 @@ The central design constraint is **strict data-plane/control-plane separation**.
 Corvi consists of independently deployable components:
 
 - **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads using native IMAP or JMAP, submits upstream via SMTP or JMAP, and owns optional operational state.
-- **Control plane:** Resolves provider settings, reconciles supported upstream resources, issues and rotates gateway configuration/credentials, and publishes versioned configuration snapshots. Optional for standalone deployments.
+- **Control plane:** Resolves provider settings, reconciles supported upstream resources, **supports privileged interactive provider OAuth connection onboarding**, issues/rotates gateway configuration and credentials, and publishes versioned snapshots. Optional for standalone deployments; a local CLI may complete an upstream OAuth grant when no controller is running.
 - **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
 - **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP or JMAP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
 - **Built-in generic transports:** IMAP, SMTP and JMAP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
@@ -59,6 +59,7 @@ The control plane implements:
 - Provider discovery, administrative reconciliation, and per-mailbox transport resolution.
 - Validation and normalization of plugin responses into provider-neutral configuration.
 - Issuance, configuration, and revocation of scoped gateway credentials.
+- **Provider-side interactive OAuth onboarding** through an authorized administrative flow, with PKCE, provider consent, protected upstream token handoff/refresh and explicit account binding. Client→Corvi authorization is separate; see [ADR-0008](0008-interactive-upstream-oauth.md).
 - Publication and rollback of complete, versioned configuration snapshots.
 - Reconciliation status, drift detection, provider-level usage and health coordination.
 
@@ -167,8 +168,8 @@ Provider forwarding, rewriting, catchalls, delegation and other upstream deliver
 
 ### 4.4 Trust boundaries
 
-- The data plane gets upstream mail credentials, but not provider administrative credentials.
-- The control plane may get provider admin credentials but must not gain unbounded access to message content.
+- The data plane gets upstream mail credentials, including securely stored/provider-refreshed OAuth access tokens where enabled, but not provider administrative credentials. A provider OAuth token is never a Corvi client token; see [ADR-0008](0008-interactive-upstream-oauth.md).
+- The control plane may get provider admin credentials and temporary provider OAuth **onboarding** tokens for a strictly authorized account-connection flow, but must not gain unbounded access to message content. Ordinary configuration snapshots must not contain raw OAuth access or refresh tokens.
 - External provider plugins run with minimal filesystem, network and Kubernetes permissions; restrict egress to their intended provider endpoints where practicable.
 - OCI images should be digest-pinned, scanned, and deployable with restrictive security contexts.
 - Split administrative APIs from public mail APIs; protect internal configuration publication with strong authentication and independent authorization.
@@ -232,11 +233,11 @@ The optional operator exposes these provisional API concepts, with names and fie
 | **MailFilterPolicy** | Declarative message visibility, classification, redaction, attachment and rendering restrictions (see ADR-0003) |
 | **MailCredential** | Scoped gateway authentication material, issuance/revocation lifecycle |
 
-**Mailbox lifecycle** must distinguish provider-managed creation/reconciliation from **External** existing mailboxes that Corvi merely accesses.
+**Mailbox lifecycle** must distinguish provider-managed creation/reconciliation from **External** existing mailboxes that Corvi merely accesses. `MailProvider` and `Mailbox` may refer to a separately permissioned `ProviderConnection` (or equivalent) holding upstream OAuth account binding and protected secret references. Provider OAuth access does not grant clients access to any Corvi identity.
 
 For **MailProvider**:
 
-- A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP **or native JMAP** transport settings come from user configuration and the proposed [transport schema](../../api/mail-transport.schema.json).
+- A built-in generic provider requires no OCI image, no plugin Deployment and no provider management access; its IMAP/SMTP **or native JMAP** transport settings come from user configuration and the proposed [transport schema](../../api/mail-transport.schema.json). It may use upstream OAuth through an explicitly configured account and **standalone local CLI-assisted login**, without a required provider OCI plugin; provider-specific OAuth client registration constraints still apply.
 - An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics. Provider images may declare a **local bridge dependency** via OCI annotations/typed descriptor; the controller verifies metadata against trusted gRPC discovery and administrator-approved image/runtime policy before deploying a bridge.
 - If provider administration is enabled but the gateway is disabled, the operator still reconciles domains/mailboxes/aliases/etc.
 - If only transport is configured, Corvi must not attempt provider administration.
@@ -350,6 +351,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
    - Specify REST and MCP public contracts and ship a maintained **agent-facing MCP skill** (`SKILL.md`, examples and usage/safety guidance) once the MCP tools are implemented; test the skill against the actual server rather than documenting speculative tool names.
 2. **Identity and safety:** Credentials, MailIdentity/MailPolicy, sender enforcement, confidential-message filtering, strict isolation capability classification.
 3. **Native JMAP:** Implement RFC 8620 Session/capability discovery, JMAP mail reader, attachment reader, filtered synchronization and JMAP submission. Test Fastmail and mixed IMAP/JMAP identities without extending public REST/MCP methods (ADR-0007).
+   - **Provider OAuth:** Implement interactive Authorization Code + PKCE, safe local/hosted callbacks and provider-specific registration, encrypted token custody and refresh; then connect JMAP and IMAP/SMTP OAuth mechanisms (ADR-0008).
 4. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
 5. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.
    - **Bridge compatibility path:** Add the typed provider topology/OCI metadata and local-bridge resolver contract, then test an existing bridge before implementing optional managed-bridge lifecycle or a Proton adapter (see ADR-0006).
@@ -383,7 +385,7 @@ These are deliberately left for follow-up ADRs rather than assumed settled:
 
 - Exact protobuf messages, schema compatibility/version migration and per-capability error models.
 - Snapshot persistence and transport (file, pushed gRPC, or another authenticated publication channel); reload atomicity across large fleets.
-- Credential custody, encrypted secret-at-rest implementation, rotation and emergency revocation distribution.
+- Credential custody, encrypted secret-at-rest implementation, rotation and emergency revocation distribution. **Provider OAuth browser/CLI consent, PKCE, issuer/redirect safeguards, token refresh/rotation and independent client/connection revocation** follow [ADR-0008](0008-interactive-upstream-oauth.md).
 - Provider extension fields and admission/defaulting strategy in CRDs.
 - Exact trusted recipient provenance mechanisms achievable with Migadu; criteria for verified isolation.
 - State backend for optional queue/index/synchronizer and cross-replica ownership.

@@ -2567,5 +2567,36 @@
     "jmapPushFilteredBeforeMcpNotification": true,
     "specification": "docs/adr/0007-native-jmap-transport.md",
     "schema": "api/mail-transport.schema.json"
+  },
+  "clientAuthorization": {
+    "status": "proposed-not-implemented",
+    "specification": "docs/adr/0009-corvi-oauth-and-identity-grants.md",
+    "schema": "api/corvi-oauth.schema.json",
+    "protectedResource": {
+      "standard": "RFC 9728",
+      "resourceIndicator": "deployment-specific-configured-corvi-mail-resource",
+      "authorizationServerDiscovery": "RFC 8414"
+    },
+    "flows": [
+      "authorization_code+PKCE-S256",
+      "refresh_token",
+      "client_credentials",
+      "optional_device_authorization"
+    ],
+    "clientEnrollment": [
+      "CIMD",
+      "pre_registered",
+      "optional_deprecated_DCR"
+    ],
+    "consent": {
+      "standard": "RFC 9396",
+      "authorizationDetailsType": "corvi_mail",
+      "perIdentity": true,
+      "intersectionOfTokenGrantAndPolicy": true
+    },
+    "grants": "One authenticated client may receive multiple identity-scoped grants with independent allowed action sets and without cross-identity permission union.",
+    "tokenValidation": "Issuer, audience/resource, client, principal, expiry, signature/introspection, active identity grant and current policy; provider OAuth tokens are NEVER Corvi client tokens.",
+    "scopeStepUp": true,
+    "note": "Metadata catalogue only. The seven public tools and their JSON schemas are unchanged. OAuth endpoints are separate from MCP tools."
   }
 }

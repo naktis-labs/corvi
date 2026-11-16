@@ -2,7 +2,7 @@
   "schemaVersion": "0.1.0",
   "targetMcpProtocol": "2026-07-28",
   "status": "proposed-not-implemented",
-  "description": "Tool definitions for Corvi's mail-facing MCP server. Not a complete tools/list JSON-RPC response.",
+  "description": "Proposed Corvi MCP mail tool definitions plus MRTR, scoped resource subscriptions, and Tasks extension metadata. This is a design/catalogue artifact, not an MCP tools/list wire response.",
   "tools": [
     {
       "name": "mail_list_identities",
@@ -73,7 +73,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -400,7 +401,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -733,7 +735,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -964,7 +967,8 @@
         "destructiveHint": false
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:search"
+        "corvi.dev/requiredPermission": "mail:messages:search",
+        "corvi.dev/taskEligible": true
       }
     },
     {
@@ -1108,7 +1112,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -1453,7 +1458,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -1857,7 +1863,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -2089,7 +2096,9 @@
         "openWorldHint": true
       },
       "_meta": {
-        "corvi.dev/requiredPermission": "mail:messages:send"
+        "corvi.dev/requiredPermission": "mail:messages:send",
+        "corvi.dev/confirmation": "MRTR elicitation/create required unless explicitly authorized unattended send policy",
+        "corvi.dev/mrtrOnUnavailable": "CONFIRMATION_REQUIRED"
       }
     },
     {
@@ -2208,7 +2217,8 @@
                     "mail:messages:read",
                     "mail:attachments:read",
                     "mail:messages:send",
-                    "mail:submissions:read"
+                    "mail:submissions:read",
+                    "mail:messages:subscribe"
                   ]
                 },
                 "uniqueItems": true
@@ -2442,5 +2452,66 @@
         "corvi.dev/requiredPermission": "mail:submissions:read"
       }
     }
-  ]
+  ],
+  "protocolFeatures": {
+    "multiRoundTripRequests": {
+      "version": "2026-07-28",
+      "tool": "mail_send",
+      "confirmation": "elicitation/create",
+      "mode": "form",
+      "default": "require-explicit-approval",
+      "exception": "explicit-unattended-send-policy",
+      "inputRequiredResult": "input_required",
+      "requestState": "sealed-principal-identity-payload-idempotency-policy-expiry",
+      "resume": "same-tools/call-with-inputResponses-and-requestState",
+      "onUnavailable": "CONFIRMATION_REQUIRED"
+    },
+    "subscriptions": {
+      "method": "subscriptions/listen",
+      "resources": {
+        "list": "resources/list",
+        "read": "resources/read",
+        "uriTemplate": "corvi:///identities/{identityId}/visible-mail",
+        "requiredPermissions": [
+          "mail:messages:list",
+          "mail:messages:subscribe"
+        ],
+        "readRepresentation": [
+          "identityId",
+          "revision"
+        ]
+      },
+      "filters": [
+        "resourceSubscriptions",
+        "taskIds"
+      ],
+      "notifications": [
+        "notifications/subscriptions/acknowledged",
+        "notifications/resources/updated",
+        "notifications/tasks"
+      ],
+      "semantics": "Best-effort invalidation only for caller-visible filtered changes. No raw-message resources or hidden-only change signals."
+    },
+    "tasks": {
+      "extension": "io.modelcontextprotocol/tasks",
+      "supportedWhen": "durable-data-plane-task-store-is-configured",
+      "eligibleTools": [
+        "mail_search"
+      ],
+      "methods": [
+        "tasks/get",
+        "tasks/update",
+        "tasks/cancel"
+      ],
+      "resultType": "task",
+      "statuses": [
+        "working",
+        "input_required",
+        "completed",
+        "cancelled",
+        "failed"
+      ],
+      "constraints": "Per-request extension opt-in, durable handle before response, per-read reauthorization and re-filtered results, cooperative cancellation."
+    }
+  }
 }

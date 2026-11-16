@@ -1,0 +1,300 @@
+{
+  "schemaVersion": "0.1.0",
+  "targetMcpProtocol": "2026-07-28",
+  "status": "proposed-not-implemented",
+  "description": "Corvi public MCP resources. Runtime resources/list enumerates only authorized instantiated URIs, not all templates. These JSON Schemas describe parsed application/json resource contents (wire text field contains serialized JSON).",
+  "methods": [
+    "resources/list",
+    "resources/read"
+  ],
+  "capabilities": {
+    "resources": {
+      "listChanged": true,
+      "subscribe": true
+    }
+  },
+  "cache": {
+    "ttlMs": 0,
+    "cacheScope": "private"
+  },
+  "features": {
+    "templateEnumeration": "no resources/templates/list in v1; enumerate authorized instantiated URIs via resources/list",
+    "listChanged": "notify only when the caller-visible resource list changes",
+    "subscriptions": "context resources may be subscribed to; visible-mail resource emits only caller-visible changes",
+    "authorization": "reauthorize each list/read/notification, including same-token multiple identities across distinct mailboxes",
+    "privacy": "no raw MIME, messages, provider credentials, hidden IDs, private policy rules, raw counts or filtered-only events"
+  },
+  "resources": [
+    {
+      "uri": "corvi:///context/overview",
+      "name": "corvi-overview",
+      "title": "Corvi server overview",
+      "description": "Non-mail, non-secret context about the public mail gateway, supported protocol features and privacy model.",
+      "mimeType": "application/json",
+      "requires": "authenticated-corvi-mail-client",
+      "kind": "context",
+      "responseSchema": "serverOverview"
+    },
+    {
+      "uri": "corvi:///context/identities",
+      "name": "corvi-authorized-identities",
+      "title": "Authorized mail identities",
+      "description": "Caller-scoped snapshot of every discoverable authorized identity, including separate effective permissions for each identity, including across distinct physical mailboxes.",
+      "mimeType": "application/json",
+      "requires": "mail:identities:list-for-each-returned-identity",
+      "kind": "context",
+      "responseSchema": "identitiesContext"
+    },
+    {
+      "uri": "corvi:///context/policy-summary",
+      "name": "corvi-policy-guidance",
+      "title": "Mail access and safety guidance",
+      "description": "Safe high-level rules for disclosure, authorization and interactive send confirmation; never reveals internal matcher rules or secret content.",
+      "mimeType": "application/json",
+      "requires": "authenticated-corvi-mail-client",
+      "kind": "context",
+      "responseSchema": "policySummary"
+    },
+    {
+      "uriTemplate": "corvi:///identities/{identityId}/context",
+      "name": "corvi-identity-context",
+      "title": "Per-identity mail context",
+      "description": "Caller-authorized mail identity metadata, effective per-identity grants and non-sensitive usage/isolation guidance. Enumerate only instantiated URIs already authorized to the caller.",
+      "mimeType": "application/json",
+      "requires": "mail:identities:list-for-selected-identity",
+      "kind": "context",
+      "responseSchema": "identityContext"
+    },
+    {
+      "uriTemplate": "corvi:///identities/{identityId}/visible-mail",
+      "name": "corvi-visible-mail-revision",
+      "title": "Visible inbox revision",
+      "description": "Minimal change-notification resource. Only caller-visible changes advance the revision; no messages, counts or snippets.",
+      "mimeType": "application/json",
+      "requires": "mail:messages:list+mail:messages:subscribe-for-selected-identity",
+      "kind": "signal",
+      "responseSchema": "visibleMailSignal"
+    }
+  ],
+  "$defs": {
+    "identityView": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "address": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 320
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "mail:identities:list",
+              "mail:messages:list",
+              "mail:messages:search",
+              "mail:messages:read",
+              "mail:attachments:read",
+              "mail:messages:send",
+              "mail:submissions:read",
+              "mail:messages:subscribe"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "address",
+        "permissions"
+      ]
+    },
+    "serverOverview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "service": {
+          "type": "string",
+          "const": "corvi"
+        },
+        "mailApiVersion": {
+          "type": "string",
+          "const": "v1"
+        },
+        "mcpProtocolVersion": {
+          "type": "string",
+          "const": "2026-07-28"
+        },
+        "supportedMcpFeatures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "tools",
+              "resources",
+              "subscriptions",
+              "mrtr",
+              "tasks"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "mailDataPrinciple": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "service",
+        "mailApiVersion",
+        "mcpProtocolVersion",
+        "supportedMcpFeatures",
+        "summary",
+        "mailDataPrinciple"
+      ]
+    },
+    "identitiesContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identityView"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "policySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "caller"
+          ]
+        },
+        "guidance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "maxItems": 24
+        },
+        "messageVisibility": {
+          "type": "string",
+          "const": "permission-and-disclosure-filtered"
+        },
+        "hiddenMessages": {
+          "type": "string",
+          "const": "not-enumerable"
+        },
+        "unknownResults": {
+          "type": "string",
+          "const": "not-proof-of-absence"
+        },
+        "sendApproval": {
+          "type": "string",
+          "const": "MRTR-or-explicit-unattended-authorization"
+        },
+        "currentPolicyRevision": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Optional opaque principal-scoped revision; never rule IDs or matching details."
+        }
+      },
+      "required": [
+        "scope",
+        "guidance",
+        "messageVisibility",
+        "hiddenMessages",
+        "unknownResults",
+        "sendApproval"
+      ]
+    },
+    "identityContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identityView"
+        },
+        "isolationAssurance": {
+          "type": "string",
+          "enum": [
+            "dedicated",
+            "verified",
+            "bestEffort"
+          ],
+          "description": "Best-effort alias isolation is not a confidentiality guarantee."
+        },
+        "visibleContent": {
+          "type": "string",
+          "const": "subject-to-disclosure-filtering"
+        },
+        "sendApproval": {
+          "type": "string",
+          "enum": [
+            "not-permitted",
+            "interactive-required",
+            "unattended-authorized"
+          ]
+        },
+        "guidance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "identity",
+        "visibleContent",
+        "sendApproval",
+        "guidance"
+      ]
+    },
+    "visibleMailSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Opaque principal/identity/policy-scoped visible-inbox revision only."
+        }
+      },
+      "required": [
+        "identityId",
+        "revision"
+      ]
+    }
+  }
+}

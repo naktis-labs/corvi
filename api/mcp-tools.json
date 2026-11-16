@@ -6,7 +6,7 @@
   "tools": [
     {
       "name": "mail_list_identities",
-      "description": "Discover only authorized identities and granted operations. Required permission: mail:identities:list. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Return the complete caller-discoverable set of authorized identities, including those backed by different physical mailboxes/providers, each with independent effective permissions. Required permission: mail:identities:list. The server enforces identity and disclosure policies regardless of tool discovery.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -310,7 +310,7 @@
     },
     {
       "name": "mail_list",
-      "description": "List policy-visible mail only, sorted newest first. No upstream counts. Required permission: mail:messages:list. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "List policy-visible mail only, sorted newest first. No upstream counts. Required permission: mail:messages:list. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -638,7 +638,7 @@
     },
     {
       "name": "mail_search",
-      "description": "Case-insensitive literal query over visible subject and text. Hidden mail is never returned. Required permission: mail:messages:search. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Case-insensitive literal query over visible subject and text. Hidden mail is never returned. Required permission: mail:messages:search. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -973,7 +973,7 @@
     },
     {
       "name": "mail_get",
-      "description": "Get a sanitized mail projection; never return raw MIME or hidden mail. Required permission: mail:messages:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Get a sanitized mail projection; never return raw MIME or hidden mail. Required permission: mail:messages:read. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1349,7 +1349,7 @@
     },
     {
       "name": "mail_get_attachment",
-      "description": "Get approved attachment bytes as base64 with a 2 MiB decoded size cap. Required permission: mail:attachments:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Get approved attachment bytes as base64 with a 2 MiB decoded size cap. Required permission: mail:attachments:read. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1695,7 +1695,7 @@
     },
     {
       "name": "mail_send",
-      "description": "Send text-only mail from an authorized identity. Require explicit user approval unless unattended automation is permitted. Required permission: mail:messages:send. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Send text-only mail from an authorized identity. Require explicit user approval unless unattended automation is permitted. Required permission: mail:messages:send. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2103,7 +2103,7 @@
     },
     {
       "name": "mail_get_send_status",
-      "description": "Get the authorized status of one outgoing submission. Required permission: mail:submissions:read. The server enforces identity and disclosure policies regardless of tool discovery.",
+      "description": "Get the authorized status of one outgoing submission. Required permission: mail:submissions:read. The server enforces identity and disclosure policies regardless of tool discovery. A client may select a different authorized identityId on its next call without changing tokens; permissions do not union across identities.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2513,5 +2513,19 @@
       ],
       "constraints": "Per-request extension opt-in, durable handle before response, per-read reauthorization and re-filtered results, cooperative cancellation."
     }
+  },
+  "authorizationModel": {
+    "multiIdentityPerCredential": true,
+    "multiplePhysicalMailboxesPerCredential": true,
+    "identitySelector": "identityId",
+    "requiresExplicitIdentityPerCall": true,
+    "identityDiscovery": "mail_list_identities returns all caller-visible identities with each identity's own effective permissions",
+    "grantBinding": "principal/credential -> identityId -> independently authorized actions and policies",
+    "noCrossIdentityPermissionUnion": true,
+    "noImplicitGlobalMailboxQuery": true,
+    "requireSameTokenAcrossOperations": false,
+    "singleTokenSupported": true,
+    "isolation": "message IDs, cursors, attachments, send receipts, MRTR approval state, Task handles and subscription URIs must be bound to the selected identity",
+    "subscriptions": "one subscriptions/listen may authorize multiple independent visible-mail resource URIs from the same token"
   }
 }

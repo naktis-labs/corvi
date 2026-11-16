@@ -34,11 +34,26 @@ Reading, searching and listing are separately grantable; a credential need not h
 
 **Explicit identity selection:** Every operation other than listing identities supplies an `identityId`. A gateway-issued opaque message ID alone never grants access. Both identity and message-level eligibility must be checked at every call, even when the caller guesses an existing ID. No implicit global mailbox selection.
 
+### Multi-mailbox and multi-identity credentials (required in v1)
+
+**A single MCP client authenticated by one access token MUST be able to use multiple explicitly granted `MailIdentity` resources, including identities backed by different physical `Mailbox` instances or upstream providers.** The same capability applies to REST. Requiring one token, connection, or MCP server process per mailbox/identity is expressly **not** part of Corvi's design.
+
+- A validated credential maps to a **set of identity-scoped grants**, conceptually `{ identityId -> allowedActions, mailPolicy, mailFilterPolicy }`. The set may contain any number of permitted identities within deployment limits; authorization is the **intersection** of token/credential maxima, server-side grants, current identity membership, and applicable action/disclosure policy. A token containing broad scope names without identity bindings cannot enumerate or act on every mailbox.
+- Distinct identities may map to **the same physical mailbox** (aliases with provenance constraints) or to **different mailboxes, accounts, or providers**. The data plane resolves the selected identity to its configured upstream mailbox and transport using trusted local configuration; client-supplied `identityId` is an untrusted selector, never an upstream mailbox path, credential or provider ID.
+- `mail_list_identities` / `GET /v1/identities` returns **all identities granted to that caller that are allowed to be discovered**, each with its **own effective action set**. A client may list/search/read using identity A, then send using identity B with **the same access token and MCP connection**, without new authorization or separate MCP sessions.
+- **Each mail operation targets exactly one explicit `identityId`** in v1. There is no `allMailboxes`, implicit default identity, or cross-identity search/list endpoint. An agent can issue multiple separately authorized operations and combine only the results it is itself allowed to see.
+- Grants and disclosure policy are evaluated **for the selected identity** on every call. The union of a token's identities must **not** union their permissions: `mail:messages:read` on identity A and `mail:messages:send` on identity B does not grant read on B or send on A. A credential cannot access another mailbox by passing its message ID with a different `identityId`.
+- Cursor tokens, message projections, attachment handles, send idempotency keys, MRTR `requestState`, Tasks handles, and subscription resource revisions/notifications are scoped to the **specific selected identity**, principal, credential and policy generation. Reuse across identity boundaries is denied without revealing whether the target resource exists.
+- For resource subscriptions, a single authenticated `subscriptions/listen` request may list **multiple permitted** `corvi:///identities/{identityId}/visible-mail` URIs, with an acknowledged authorized subset. No change event is emitted for a nonpermitted identity or for hidden-only changes.
+- Credential revocation, per-identity grant changes, and identity removal invalidate only the relevant authorizations and dependent state according to the configured revocation guarantees; they must never silently expand another identity's visibility.
+
+**Non-goal:** A token with permission to manage mail-provider resources or a broadly named OAuth scope does not automatically get personal message access. Identity grants always remain explicit and enforceable.
+
 ## 1. Resource model
 
 ### MailIdentityView
 
-A safe client-visible identity includes `id`, `address`, optional `displayName`, and capability booleans or action names for the current caller. It never includes upstream IMAP/SMTP credentials, management secrets, other aliases, or raw provider identifiers.
+A safe client-visible identity includes `id`, `address`, optional `displayName`, and action names **effective for that particular identity and caller**. It never includes upstream IMAP/SMTP credentials, management secrets, other aliases, or raw provider identifiers.
 
 ### MailMessageSummary
 
@@ -64,7 +79,7 @@ An attachment descriptor provides a gateway-issued opaque attachment ID, a sanit
 
 All operations use, in order:
 
-1. Authenticate the caller and validate token issuer/audience/expiry, active credential and bound identities.
+1. Authenticate the caller and validate token issuer/audience/expiry, active credential and the selected identity's explicit grant (which may be one of many identity grants on the same credential).
 2. Authorize the requested action under `MailPolicy`.
 3. Verify mailbox/identity membership and trusted original-recipient provenance where configured as `verified`.
 4. Evaluate `MailFilterPolicy`, including classification and optional local WASM/remote PDP obligations.
@@ -149,6 +164,9 @@ Rate limiting, tracing, error details and audit records must be partitioned by p
 Before considering this API stable, require contract tests that exercise **each operation through REST and MCP using the same fixtures**, including:
 
 1. Same visible messages, redacted fields and attachment availability for the same principal/identity/policy across both transports.
+14. One token grants at least two identities backed by different physical mailboxes/providers with different action/disclosure policies; one MCP client can switch between them and use each without reconnecting or changing tokens.
+15. A read grant for identity A plus a send grant for identity B never permits reading B or sending A; identity A's message IDs, cursors, attachment IDs, send receipts, subscriptions and Tasks do not become accessible under B.
+16. Listing identities returns the caller-visible set with **per-identity** permissions, not the intersection or union of all identities' actions. A single listen stream can include multiple authorized identities and must ignore ungranted or hidden-only updates.
 2. Hidden message IDs return non-disclosing 404 or equivalent MCP tool error, including after guessing a valid ID from another identity.
 3. No hidden data in search, counts, pagination cursors, snippets, thread metadata or attachment access; no scan-on-list bypass.
 4. Tool discovery and cached results cannot expose capabilities/data from another principal.

@@ -101,7 +101,7 @@ Corvi derives header From and SMTP envelope sender from the authorized `MailIden
 
 For REST, `200` indicates an existing/replayed or immediately submitted receipt, while `202` indicates queued/accepted-for-processing; the documented response schema is the same. MCP returns the same structured `Submission` status, never a stronger delivery guarantee.
 
-**Agent confirmation:** `mail_send` is a side-effecting operation; user-facing hosts and the companion MCP skill must require review/confirmation unless the user deliberately configured an unattended automation policy with bounded identities/recipients. Server-side authorization is required in either case. A model-generated claim of approval is not a substitute for actual host/user authorization.
+**Agent confirmation:** Interactive MCP `mail_send` requires **MRTR form elicitation**, with a signed expiring `requestState` bound to the exact payload, principal, identity and idempotency key. On resume Corvi revalidates policy, identity, approval and replay protection before contacting SMTP. Only an explicitly scoped unattended-send grant may bypass this step. A model-generated claim of approval is not authorization; non-MRTR clients fail closed with `CONFIRMATION_REQUIRED`. REST sends retain their separate authorization/approval workflow.
 
 ## 5. REST contract
 
@@ -120,20 +120,31 @@ The machine-readable source of truth is [`api/openapi.yaml`](../../api/openapi.y
 The human-reviewed source of truth is [`docs/spec/mcp.md`](../spec/mcp.md); it must be validated against a concrete test server and the same service DTOs as OpenAPI.
 
 - Target **MCP protocol revision `2026-07-28`**, using Streamable HTTP `POST /mcp` (and optional trusted stdio). The modern revision is stateless, with `server/discover`, per-request protocol metadata, required version/method HTTP headers, and required `resultType` in results.
-- Initial tools are exactly the seven operations listed above. Each exposes strict `inputSchema`, `outputSchema`, and structured content; do not invent additional tools without documenting permissions and security tests.
+- Initial mail tools remain exactly the seven operations listed above. Each exposes strict `inputSchema`, `outputSchema`, and structured content. **MRTR, subscriptions and Tasks are MCP protocol mechanisms, not additional mail tools.**
 - In MCP, `tools/list` and `tools/call` are **not permission grants**. Tool discovery may vary with the authenticated user but is never a substitute for per-call permission checks. Use private/no-cache lists by default.
-- Do **not** use MCP resources as a second route to raw messages or attachments in v1. Resources, prompts, subscriptions and task extensions are intentionally deferred until their disclosure/authorization behavior is specified.
+- Support only one scoped MCP resource kind, `corvi:///identities/{identityId}/visible-mail`, with `resources/list` and `resources/read` returning an opaque *caller-visible* change revision, never mail content. `subscriptions/listen` emits `notifications/resources/updated` only when that caller's sanitized view changes. The separate `mail:messages:subscribe` grant is required alongside list permission. Other raw message resources, prompts and sampling remain deferred.
+- Support **MRTR** for sending confirmation and the official opt-in **Tasks extension** (`io.modelcontextprotocol/tasks`), initially for long-running `mail_search` with durable task storage. See [MCP spec](../spec/mcp.md) for full lifecycle and safeguards.
 - Support for older `2025-11-25` handshake-based clients is a **future compatibility choice**; it is not implied by serving the modern protocol. If added, test both eras with distinct lifecycle/transport expectations.
 
 The MCP specification sources used for these protocol-level decisions are the published [2026-07-28 specification announcement](https://blog.modelcontextprotocol.io/posts/2026-07-28/) and [2026-07-28 changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog).
 
-## 7. Control-plane and operational boundaries
+## 7. MCP interactive and asynchronous facilities
+
+**MRTR:** `mail_send` returns `resultType: "input_required"` with a form `elicitation/create` request for approval. The resumed `tools/call` must provide an affirmative `inputResponses` and an authenticated, expiring `requestState`. Corvi must reauthorize and verify the exact outgoing message before sending. No SMTP side effects occur before approval.
+
+**Subscriptions:** For callers with both `mail:messages:list` and `mail:messages:subscribe`, a `corvi:///identities/{identityId}/visible-mail` resource reports only a per-caller opaque visible-state revision. `subscriptions/listen` acknowledges permitted URIs and sends `notifications/resources/updated` for changes **visible after filtering**. Hidden-only mailbox activity must not generate observable notifications. Streams are best-effort and not a replay log; reconnecting clients refetch their permitted view.
+
+**Tasks:** When the optional durable data-plane task backend is available, Corvi advertises `io.modelcontextprotocol/tasks`. A task-capable `mail_search` call can return `resultType: "task"` only after a retrievable task has been persisted. Clients use `tasks/get`, `tasks/update`, `tasks/cancel`; authorized clients can subscribe to `notifications/tasks` through `subscriptions/listen` with task IDs. Recheck identity, scopes and filtering on task polling, result reads and notifications. Tasks are not mandatory for standalone deployments. Other operations (e.g. sync/classification) can be added as future task-eligible tools only after explicit authorization design.
+
+These features **do not change** the shared REST application service or expose any provider-management controls. They must never bypass message isolation or policy decisions.
+
+## 8. Control-plane and operational boundaries
 
 The public `/v1` and `/mcp` endpoints never expose mail-provider domain, mailbox, alias or plugin-management operations. A separate authenticated administrative API, possibly on a separate listener, will be specified independently. SMTP AUTH submission calls the same action/identity policy layer; it is not mapped into arbitrary MCP tool calls.
 
 Rate limiting, tracing, error details and audit records must be partitioned by principal/identity without including private mail content or individual addresses as metric labels. Corvi's one-container standalone mode remains supported.
 
-## 8. Conformance and release gates
+## 9. Conformance and release gates
 
 Before considering this API stable, require contract tests that exercise **each operation through REST and MCP using the same fixtures**, including:
 
@@ -146,11 +157,14 @@ Before considering this API stable, require contract tests that exercise **each 
 7. Unknown SMTP outcomes are not reported as successful final delivery; process-restart replay limitations are documented and tested.
 8. OAuth resource-server metadata, audience validation, invalid Origin/Host, absent or mismatched MCP headers, unsupported MCP protocol version and overly large requests are handled safely.
 9. Generated REST clients pass OpenAPI validation; MCP tool input/output schemas pass JSON Schema checks and current protocol conformance suites.
+11. MRTR denied, replayed, tampered, modified-message or stale-policy send confirmations never contact SMTP; explicit unattended automation still respects send rules.
+12. Hidden-only incoming mail changes do not trigger resource change notifications, and revoked/expired subscriptions stop delivering events.
+13. Task handles are durably persisted before return; task IDs are identity-bound, task results re-filter on access, and cancellation is cooperative.
 10. Data-plane operations succeed without a control plane, operator, provider-management RPC or optional external policy engine unless configured to require it.
 
-## 9. Skill deliverable
+## 10. Skill deliverable
 
-An agent-oriented `SKILL.md` and accompanying examples remain a **required deliverable** alongside the MCP implementation. It must describe accurate server discovery, authentication, identity selection, tool arguments, permitted read/search behavior, privacy restrictions, redaction semantics, safe sending and idempotent retries. It must be generated/reviewed against the **actual** MCP tool catalog and conformance fixtures, not speculative capabilities. Publishing the spec does not mean the skill or the server is implemented.
+An agent-oriented `SKILL.md` and accompanying examples remain a **required deliverable** alongside the MCP implementation. It must describe accurate server discovery, authentication, identity selection, tool arguments, permitted read/search behavior, privacy restrictions, redaction semantics, MRTR approval, scoped inbox-change subscriptions, task polling/cancellation, safe sending and idempotent retries. It must be generated/reviewed against the **actual** MCP tool catalog and conformance fixtures, not speculative capabilities. Publishing the spec does not mean the skill or the server is implemented.
 
 ## Open questions
 

@@ -33,7 +33,7 @@ Read **[ADR-0001: Corvi system architecture](docs/adr/0001-corvi-system-architec
 
 **[ADR-0005: Shared public mail API contract](docs/adr/0005-public-mail-api.md)** establishes consistent client-facing authorization, filtering, pagination, sending and idempotency semantics across REST and MCP.
 
-**[ADR-0006: Provider-managed local mail transport bridges](docs/adr/0006-local-transport-bridges.md)** specifies direct versus existing/managed bridge topology, OCI metadata-assisted discovery, validated runtime provisioning, local endpoint/TLS security and Proton Mail Bridge compatibility constraints.
+**[ADR-0006: Provider-managed local mail transport bridges](docs/adr/0006-local-transport-bridges.md)** specifies direct versus existing/managed bridge topology, OCI metadata-assisted discovery, validated runtime provisioning, local endpoint/TLS security and Proton Mail Bridge compatibility constraints. A [proposed JSON Schema](api/provider-transport-bridge.schema.json) describes typed bridge prerequisites.
 
 ## Proposed public API specifications
 

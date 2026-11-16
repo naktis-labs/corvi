@@ -1742,7 +1742,27 @@
           "subject",
           "textBody",
           "idempotencyKey"
-        ]
+        ],
+        "$defs": {
+          "mailAddress": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 320
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "email"
+            ]
+          }
+        }
       },
       "outputSchema": {
         "type": "object",

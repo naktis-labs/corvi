@@ -2,36 +2,36 @@
 
 **Design fixtures only, not a released or deployable Corvi chart.** The application images, health endpoints, runtime env/config contract, CRD groups, CRD plural names and admission policies are not implemented/finalized. The examples must not be installed without that implementation and validation.
 
-Read [ADR-0011: Helm chart and Kubernetes hardening](../../../docs/adr/0011-helm-chart-and-kubernetes-hardening.md) and [ADR-0010: Kubernetes-native control-plane storage](../../../docs/adr/0010-storage-and-durability.md).
+Read [ADR-0011: Helm chart and Kubernetes hardening](../../../docs/adr/0011-hardened-helm-deployment.md) and [ADR-0010: Kubernetes-native control-plane storage](../../../docs/adr/0010-storage-and-durability.md).
 
 ## Profiles
 
 | File | Workload | Kubernetes token | Permissions |
 | --- | --- | --- | --- |
-| [`gateway.values.example.yaml`](gateway.values.example.yaml) | Provider-neutral REST/MCP/SMTP gateway, optionally native IMAP/JMAP | **No** | No Kubernetes Role |
-| [`operator.values.example.yaml`](operator.values.example.yaml) | Kubernetes CRD controller and approved OCI provider plugin manager | **Yes** | Namespaced Role only; read CRDs, patch status/finalizers, manage limited workloads, Lease |
+| [`app-template-gateway.values.yaml`](../app-template-gateway.values.yaml) | Provider-neutral REST/MCP/SMTP gateway, optionally native IMAP/JMAP | **No** | No Kubernetes Role |
+| [`app-template-operator.values.yaml`](../app-template-operator.values.yaml) | Kubernetes CRD controller and approved OCI provider plugin manager | **Yes** | Namespaced Role only; read CRDs, patch status/finalizers, manage limited workloads, Lease |
 | [`networkpolicy.example.yaml`](networkpolicy.example.yaml) | Default-deny and bounded DNS egress for Corvi namespace | N/A | Independently add explicitly approved per-component network flows |
 
 Independent Corvi OAuth issuer, provider adapters, WASM/PDP and bridge runtime use the **same container/pod hardening profile** as gateway with separate namespace/ServiceAccounts/network and Secret references. They are not automatically enabled by the operator release. Only the operator normally needs the Kubernetes API.
 
 ## Chart base
 
-Pin the OCI chart and render its values from the corresponding example. Reference currently tested design release: **bjw-s-labs/app-template 5.2.1**, from `oci://ghcr.io/bjw-s-labs/helm/app-template`. Newer compatible versions may be evaluated with rendered-manifest testing and explicit bump. Production Helm dependencies and images must be pinned and provenance-verified; this design example intentionally does not invent an available Corvi image digest.
+Pin the OCI chart and render its values from the corresponding example. Reference pinned design release: **bjw-s-labs/app-template 5.3.0**, from `oci://ghcr.io/bjw-s-labs/helm/app-template`. Newer compatible versions may be evaluated with rendered-manifest testing and explicit bump. Production Helm dependencies and images must be pinned and provenance-verified; this design example intentionally does not invent an available Corvi image digest.
 
 After real release images and health paths exist, render and inspect:
 
 ```sh
 helm template corvi-gateway \
   oci://ghcr.io/bjw-s-labs/helm/app-template \
-  --version 5.2.1 \
+  --version 5.3.0 \
   --namespace corvi-system \
-  -f deploy/helm/app-template/gateway.values.example.yaml > /tmp/corvi-gateway.yaml
+  -f deploy/helm/app-template-gateway.values.yaml > /tmp/corvi-gateway.yaml
 
 helm template corvi-operator \
   oci://ghcr.io/bjw-s-labs/helm/app-template \
-  --version 5.2.1 \
+  --version 5.3.0 \
   --namespace corvi-system \
-  -f deploy/helm/app-template/operator.values.example.yaml > /tmp/corvi-operator.yaml
+  -f deploy/helm/app-template-operator.values.yaml > /tmp/corvi-operator.yaml
 ```
 
 These commands are **future CI targets**, not a claim they currently pass or that the example workloads boot.

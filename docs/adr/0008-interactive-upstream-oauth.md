@@ -86,6 +86,7 @@ Each connection stores metadata separately from a **provider credential secret**
 - On `invalid_grant`, denied refresh, revoked grant, account mismatch, scope loss or missing credential, mark the connection `needsReauthorization` and fail dependent upstream operations **closed**. Surface only non-sensitive status to authorized admins; do not automatically fall back to an earlier password or broaden privileges.
 - Revocation/disconnect: remove Corvi's binding, invalidate cached upstream access tokens, revoke with the provider endpoint if advertised, securely delete local secret state and cancel affected long-running operations. Provider-side revoke is best-effort and not guaranteed by local deletion; report that distinction.
 - Corvi client token revocation is **independent**: revoking an agent's `MailCredential` does not revoke the upstream account, while disconnecting an upstream account makes dependent operations unavailable even if their local identity grants still exist.
+- **Generated application connection Secrets** (ADR-0014) may contain separately provider-issued scoped app tokens when direct access is both supported and policy-equivalent; they **never** contain the owner's upstream provider OAuth refresh token, provider-admin API token or an unscoped credential taken from Corvi's internal vault. Custom Secret annotations do not authorize credential disclosure.
 
 ## 5. OAuth token use by protocol
 

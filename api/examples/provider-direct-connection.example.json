@@ -1,0 +1,29 @@
+{
+  "version": "corvi.naktis.eu/connection/v1",
+  "mode": "providerDirect",
+  "revision": "example-generation-43",
+  "identity": {
+    "id": "unserved",
+    "address": "alerts@example.test"
+  },
+  "capabilities": [
+    "mail:messages:send"
+  ],
+  "services": {
+    "smtp": {
+      "host": "smtp.example.test",
+      "port": 587,
+      "tls": {
+        "mode": "starttls",
+        "serverName": "smtp.example.test"
+      }
+    }
+  },
+  "auth": {
+    "smtp": {
+      "type": "app_password",
+      "username": "alerts@example.test",
+      "secret": "REDACTED-EXAMPLE-PROVIDER-APP-PASSWORD"
+    }
+  }
+}

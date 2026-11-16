@@ -13,6 +13,13 @@ tags:
     description: "Authorized provider-neutral upstream SMTP or JMAP submission and status."
 security:
   - bearerAuth: []
+  - corviOAuth: []
+x-corvi-oauth:
+  design: "ADR-0009, configured issuer; the example URLs in corviOAuth are not required deployment hostnames."
+  consent: "RFC 9396 authorization_details with custom corvi_mail type, plus current server-side identity grants and policies."
+  identityBindingRequired: true
+  resourceIndicator: "https://mail.corvi.naktis.eu"
+  resourceMetadata: "RFC 9728, at the correct configured well-known location"
 paths:
   "/v1/identities":
     get:
@@ -22,6 +29,11 @@ paths:
       summary: "List identities authorized for this caller"
       description: "Returns all identities explicitly granted to this principal, potentially across multiple mailboxes and providers, each with its own effective permissions. One bearer token may authorize many identities; scope is rechecked on every request."
       x-corvi-permission: "mail:identities:list"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:identities:list"
+      x-corvi-identity-grant-required: true
       responses:
         "200":
           description: "Authorized identities only."
@@ -49,6 +61,11 @@ paths:
       summary: "List visible messages"
       description: "Newest first. The listing does not reveal hidden messages, unfiltered counts or raw IMAP UIDs."
       x-corvi-permission: "mail:messages:list"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:messages:list"
+      x-corvi-identity-grant-required: true
       parameters:
         - "$ref": "#/components/parameters/identityId"
         - "$ref": "#/components/parameters/limit"
@@ -88,6 +105,11 @@ paths:
       summary: "Search authorized message projections"
       description: "Literal case-insensitive search over permitted text/subject only. No upstream raw hit count or policy bypass."
       x-corvi-permission: "mail:messages:search"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:messages:search"
+      x-corvi-identity-grant-required: true
       requestBody:
         required: true
         content:
@@ -129,6 +151,11 @@ paths:
       summary: "Read a filtered message"
       description: "A hidden message is indistinguishable from an absent message. Reading does not change upstream read flags."
       x-corvi-permission: "mail:messages:read"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:messages:read"
+      x-corvi-identity-grant-required: true
       parameters:
         - "$ref": "#/components/parameters/messageId"
         - "$ref": "#/components/parameters/identityId"
@@ -165,6 +192,11 @@ paths:
       summary: "Download a permitted attachment"
       description: "Re-evaluates identity, message and attachment disclosure policy at read time; never returns raw source MIME."
       x-corvi-permission: "mail:attachments:read"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:attachments:read"
+      x-corvi-identity-grant-required: true
       parameters:
         - "$ref": "#/components/parameters/messageId"
         - "$ref": "#/components/parameters/attachmentId"
@@ -203,6 +235,11 @@ paths:
       summary: "Submit text-only mail from an authorized identity"
       description: "Idempotency key binds principal, identity and canonical payload; no arbitrary From or raw MIME. Replays return the existing submission."
       x-corvi-permission: "mail:messages:send"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:messages:send"
+      x-corvi-identity-grant-required: true
       parameters:
         - name: "Idempotency-Key"
           in: "header"
@@ -267,6 +304,11 @@ paths:
       summary: "Retrieve a previously authorized send status"
       description: "No other caller's submissions can be enumerated; upstream acceptance is not recipient delivery."
       x-corvi-permission: "mail:submissions:read"
+      security:
+        - bearerAuth: []
+        - corviOAuth:
+            - "mail:submissions:read"
+      x-corvi-identity-grant-required: true
       parameters:
         - "$ref": "#/components/parameters/submissionId"
         - "$ref": "#/components/parameters/identityId"
@@ -301,6 +343,37 @@ components:
       type: "http"
       scheme: "bearer"
       description: "Corvi-authorized bearer credential or validated OAuth2 access token. One token can grant multiple identities backed by different mailboxes or providers, with independent action grants; passing identityId selects exactly one authorized identity per operation. Scopes must never be unioned across identities. Never use upstream provider credentials."
+    corviOAuth:
+      type: "oauth2"
+      description: "Proposed Corvi-issued or appropriately trusted Corvi-audience OAuth access token. Endpoints are example deployment URLs; real issuer/resource URIs come from RFC 9728/8414 metadata. Scopes are action maxima ONLY; identity access requires independently approved per-client corvi_mail authorization_details (RFC 9396) or equivalent active server-side grants (ADR-0009)."
+      x-corvi-configurable-issuer: true
+      x-corvi-client-id-metadata-documents: true
+      x-corvi-authorization-details-type: "corvi_mail"
+      flows:
+        authorizationCode:
+          authorizationUrl: "https://auth.corvi.naktis.eu/oauth/authorize"
+          tokenUrl: "https://auth.corvi.naktis.eu/oauth/token"
+          refreshUrl: "https://auth.corvi.naktis.eu/oauth/token"
+          scopes:
+            "mail:identities:list": "Discover only granted mail identities."
+            "mail:messages:list": "List policy-visible mail for explicitly granted identities."
+            "mail:messages:search": "Search permitted mail projection for explicitly granted identities."
+            "mail:messages:read": "Get permitted, sanitized messages."
+            "mail:attachments:read": "Read permitted attachments."
+            "mail:messages:send": "Submit authorized plain-text mail. Per-message MCP MRTR approval still applies."
+            "mail:submissions:read": "Retrieve caller-authorized send status."
+            "mail:messages:subscribe": "Receive authorized filtered inbox changes, also requires mail:messages:list."
+        clientCredentials:
+          tokenUrl: "https://auth.corvi.naktis.eu/oauth/token"
+          scopes:
+            "mail:identities:list": "Discover provisioned service identity grants."
+            "mail:messages:list": "List granted visible mail."
+            "mail:messages:search": "Search granted visible mail."
+            "mail:messages:read": "Read granted sanitized messages."
+            "mail:attachments:read": "Read granted attachments."
+            "mail:messages:send": "Submit mail from explicitly authorized sender identity."
+            "mail:submissions:read": "Read authorized send status."
+            "mail:messages:subscribe": "Receive filtered events from granted identities."
   parameters:
     identityId:
       name: "identityId"

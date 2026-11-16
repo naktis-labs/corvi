@@ -28,7 +28,7 @@ Corvi consists of independently deployable components:
 
 - **Data plane:** The standalone mail gateway. Serves REST, MCP, and SMTP submission; authenticates, authorizes, filters, reads using native IMAP or JMAP, submits upstream via SMTP or JMAP, and owns optional operational state.
 - **Control plane:** Resolves provider settings, reconciles supported upstream resources, **supports privileged interactive provider OAuth connection onboarding**, issues/rotates gateway configuration and credentials, and publishes versioned snapshots. In Kubernetes mode it persists management state **only via CRDs, status, Secrets references and Leases**, with **no control-plane database**. Optional for standalone deployments; a local CLI may complete an upstream OAuth grant when no controller is running.
-- **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and workload resources. It is never on a live mail-request path.
+- **Kubernetes operator:** Optional adapter from CRDs/GitOps to the control plane, managing plugin lifecycle and, when opted in through a **CorviGateway** deployment CRD, gateway runtime workloads. The gateway can also remain directly owned by its app-template Helm chart without the operator. See [ADR-0012](0012-corvi-gateway-deployment-crd.md). The operator is never on a live mail-request path.
 - **Provider plugins:** Optional, OCI-packaged, provider-specific gRPC services. They resolve per-mailbox IMAP/SMTP or JMAP transport configuration, may administer upstream resources, and may export upstream provider metrics. They do not require Kubernetes privileges. **Bridge-backed providers** (e.g. Proton Mail via a local bridge) are explicitly supported through OCI metadata hints, verified capability discovery and optional bridge lifecycle management; see [ADR-0006](0006-local-transport-bridges.md).
 - **Built-in generic transports:** IMAP, SMTP and JMAP clients compiled into the gateway. Their configuration can be supplied directly, with **no provider container, gRPC RPC, operator, or control-plane service**.
 
@@ -73,6 +73,7 @@ The control plane can be run without a data plane. This supports management-only
 The operator (deployed using the [hardened bjw-s app-template chart model](0011-hardened-helm-deployment.md)):
 
 - Watches CRDs and converts desired state into control-plane operations. Uses the Kubernetes API directly for provider management persistence, `status.conditions` and `observedGeneration` for status, `resourceVersion` for optimistic updates, finalizers for cleanup, and `Lease` objects for leader election; **no operator SQL database**.
+- Optionally reconciles namespaced **CorviGateway** CRDs into hardened gateway Deployments/StatefulSets and ClusterIP Services, only when the gateway is not Helm-managed (ADR-0012).
 - Deploys and supervises OCI provider-plugin Deployments/Services, including discovery, readiness, configuration and lifecycle. It enforces **the same non-root, capability-free, no-privilege-escalation, read-only-root, RuntimeDefault-seccomp and no-default-service-account-token policy** for dynamically generated plugin and managed bridge Pods as Helm uses for static Pods. Incompatible managed images fail reconciliation (ADR-0011).
 - Generates or publishes normalized gateway configuration, and reports rollout status.
 - Configures mTLS certificate volumes and optional monitoring resources.
@@ -224,6 +225,7 @@ The optional operator exposes these provisional API concepts, with names and fie
 
 | Resource | Purpose |
 | --- | --- |
+| **CorviGateway** | Optional namespaced gateway runtime instance: replicas, explicit MailIdentity references, exposed protocols, authorization/state references and limits; operator-managed workload and sanitized status (ADR-0012) |
 | **MailProvider** | Provider instance, built-in IMAP/SMTP/JMAP transport settings or OCI plugin image, optional managed/existing IMAP/SMTP bridge, admin configuration, credentials, capability status |
 | **MailDomain** | Upstream domain lifecycle and provider reference |
 | **MailDomainPolicy** | Spam, catchall, quota defaults, protocol/security controls and other supported domain settings |
@@ -244,6 +246,8 @@ For **MailProvider**:
 - An external provider requires its OCI image, and may supply resolved transport settings, management capabilities and exporter metrics. Provider images may declare a **local bridge dependency** via OCI annotations/typed descriptor; the controller verifies metadata against trusted gRPC discovery and administrator-approved image/runtime policy before deploying a bridge.
 - If provider administration is enabled but the gateway is disabled, the operator still reconciles domains/mailboxes/aliases/etc.
 - If only transport is configured, Corvi must not attempt provider administration.
+
+**Gateway ownership:** Helm-direct and CorviGateway operator-managed workloads are separate deployment choices. Never have both controllers mutate one Deployment/StatefulSet, Service or configuration; never auto-adopt Helm-managed objects. CorviGateway must not expose raw PodSpecs, arbitrary images, elevated security contexts or Kubernetes API token configuration. The operator reconciles it under ADR-0011 security invariants and never becomes a synchronous mail dependency ([ADR-0012](0012-corvi-gateway-deployment-crd.md)).
 
 CRDs must not copy provider API objects wholesale. Generic resource schemas should represent common semantics, with an explicit namespaced provider-specific extension/config section where unavoidable. Status must distinguish unsupported capability, not configured, validation failure, provider outage and actual drift. Do not attempt destructive reconciliation for API operations a provider does not support.
 
@@ -358,7 +362,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 4. **Control plane and protobuf:** Provider discovery, transport resolver, management API, immutable config snapshots and rollout acknowledgment.
 5. **Migadu plugin:** Implement only documented/supported management operations, transport resolution and upstream usage/health exporter.
    - **Bridge compatibility path:** Add the typed provider topology/OCI metadata and local-bridge resolver contract, then test an existing bridge before implementing optional managed-bridge lifecycle or a Proton adapter (see ADR-0006).
-6. **Kubernetes operator:** CRDs, provider Deployment lifecycle, cert-manager CSI/Certificate negotiation, GitOps reconciliation and status.
+6. **Kubernetes operator:** CRDs, optional CorviGateway Deployment/StatefulSet reconciliation, provider Deployment lifecycle, cert-manager CSI/Certificate negotiation, GitOps reconciliation and status.
 7. **Scale/operability:** Durable optional queue, IMAP synchronization, events/indexes, multi-replica coordination, telemetry/alerts.
 
 ## 13. Architectural invariants to test in CI
@@ -366,6 +370,7 @@ Queuing, indexing, synchronization and HA create operational state, even though 
 - A Kubernetes operator-only management deployment uses **CRDs/status/Secrets/Leases with no separate database**; its reconciler restart recovers from Kubernetes API state. Helm uses [ADR-0011](0011-hardened-helm-deployment.md) rootless, readonly, no-capabilities, RuntimeDefault and narrow token/RBAC defaults.
 - A standalone gateway starts with no Kubernetes, provider plugin, gRPC control service, external database or collector. **Enabling Corvi's local OAuth issuer requires persistent grant/refresh/revocation state**, satisfied by embedded SQLite without any external database; a minimal preconfigured-resource-server deployment does not require an integrated issuer.
 - Dependency checks prohibit data-plane imports of Kubernetes, operator or provider-management modules.
+- A CorviGateway-owned workload and a Helm-owned gateway workload can coexist in a cluster but may **never share workload ownership**. Operator-generated gateways use a no-token ServiceAccount and the same rootless, no-capabilities, read-only-root security policy (ADR-0012).
 - Data-plane mail requests still succeed after the control plane and provider plugin are stopped, within explicit validity constraints.
 - Rejected config snapshots preserve the previous valid generation; partial rollouts are reported.
 - gRPC without valid TLS and authorized peer identity fails closed; no protocol downgrade is possible.

@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/upstream-oauth/v1alpha1",
+  "title": "Corvi provider OAuth connection configuration",
+  "description": "Proposed provider-side interactive OAuth onboarding capability/configuration model. No access tokens, refresh tokens, PKCE verifiers, user codes or authorization codes belong in this descriptor; store them in protected connection transaction state. Not implemented.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "providerId",
+    "client",
+    "flows",
+    "scopes",
+    "transportMechanisms"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.eu/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "UpstreamOAuthProvider"
+    },
+    "providerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "Configured or verified authorization server issuer. Provider-specific issuer metadata and strict endpoint binding are required."
+    },
+    "discoveryUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "Optional trusted RFC 8414 discovery URL; not an arbitrary client-supplied URL."
+    },
+    "client": {
+      "$ref": "#/$defs/client"
+    },
+    "endpoints": {
+      "$ref": "#/$defs/endpoints"
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "authorizationCodePkce",
+          "deviceAuthorization"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "scopes": {
+      "$ref": "#/$defs/scopes"
+    },
+    "transportMechanisms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "jmapBearer",
+          "imapOauthBearer",
+          "imapXoauth2",
+          "smtpOauthBearer",
+          "smtpXoauth2"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "refresh": {
+      "type": "object",
+      "properties": {
+        "supported": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "offlineScope": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "rotationExpected": {
+          "type": "boolean"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "singleOwner",
+            "coordinatedBroker"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "supported",
+        "strategy"
+      ]
+    },
+    "accountVerification": {
+      "type": "string",
+      "enum": [
+        "jmapSession",
+        "imapAuthenticationProbe",
+        "smtpAuthenticationProbe",
+        "providerAccountApi"
+      ]
+    },
+    "connectionStatus": {
+      "type": "string",
+      "enum": [
+        "unconnected",
+        "pendingAuthorization",
+        "connected",
+        "needsReauthorization",
+        "scopeInsufficient",
+        "accountMismatch",
+        "unsupportedRegistration",
+        "unavailable"
+      ],
+      "description": "Safe non-secret status only; must not be populated with raw provider errors."
+    }
+  },
+  "$defs": {
+    "client": {
+      "type": "object",
+      "properties": {
+        "clientId": {
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "description": "Registered client ID or client metadata URL, not a client secret."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "public",
+            "confidential"
+          ]
+        },
+        "registration": {
+          "type": "string",
+          "enum": [
+            "preRegistered",
+            "clientIdMetadata",
+            "dynamic",
+            "nativeOpenClient"
+          ]
+        },
+        "clientSecretRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Trusted secret reference, only for confidential client where required."
+        },
+        "redirectUris": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "description": "Exact registered callback allowlist; public callbacks are HTTPS and native HTTP limited to loopback."
+          }
+        },
+        "pkce": {
+          "type": "string",
+          "const": "S256"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "clientId",
+        "type",
+        "registration",
+        "redirectUris",
+        "pkce"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "public"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "clientSecretRef"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "confidential"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "description": "Confidential registration must use its configured authentication mechanism, where required by provider."
+          }
+        }
+      ]
+    },
+    "endpoints": {
+      "type": "object",
+      "properties": {
+        "authorization": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "token": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "deviceAuthorization": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "revocation": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "registration": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "authorization",
+        "token"
+      ],
+      "description": "Only administrator-allowlisted or trusted issuer-validated endpoints."
+    },
+    "scopes": {
+      "type": "object",
+      "properties": {
+        "read": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "send": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "offline": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "management": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "read",
+        "send"
+      ],
+      "description": "Exact provider scope strings; never grant Corvi identity permissions directly."
+    }
+  }
+}

@@ -127,6 +127,10 @@ An outgoing send record has a canonical payload digest, requester principal, cli
 ```yaml
 apiVersion: corvi.naktis.eu/v1alpha1
 kind: CorviStorage
+controlPlane:
+  backend: standaloneFile
+  standaloneFile:
+    path: /etc/corvi/providers.yaml
 state:
   backend: sqlite
   sqlite:
@@ -146,7 +150,37 @@ features:
   persistInboundMail: false
 ```
 
-For Kubernetes mode: set `controlPlane.backend: kubernetes`, reconcile provider-management state entirely via Kubernetes CRDs/status/Leases and approved Secret references. **Only if the data-plane/OAuth issuer needs HA transactional state**, set `state.backend: postgres` with a credential reference and a database reachable by its replicas. An operator-only install requires **no PostgreSQL, SQLite or Redis**. Do not mount the same SQLite file into multiple active replicas.
+For an **operator-only Kubernetes** deployment, an illustrative configuration uses:
+
+```yaml
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviStorage
+controlPlane:
+  backend: kubernetes
+  kubernetes:
+    namespace: corvi-system
+    leaderElectionLeaseName: corvi-controller
+state:
+  backend: ephemeral
+secrets:
+  backend: kubernetesSecret
+  kubernetesSecret:
+    namespace: corvi-system
+    mountPath: /var/run/corvi/provider-secrets
+blobs:
+  backend: disabled
+features:
+  integratedOAuthIssuer: false
+  durableSubmission: false
+  durableTasks: false
+  persistentMailboxSync: false
+  persistInboundMail: false
+  multiReplica: false
+```
+
+The Kubernetes operator reconciles entirely from CRDs/status/Leases and approved Secret references. `state.backend: ephemeral` in this **operator-only** example means the *data-plane/OAuth transactional store is not enabled*; it is not a second control-plane data store.
+
+**Only if the data-plane/OAuth issuer needs HA transactional state**, set `state.backend: postgres` with a credential reference and a database reachable by its replicas. An operator-only install requires **no PostgreSQL, SQLite or Redis**. Do not mount the same SQLite file into multiple active replicas.
 
 **Do not copy the literal `secret://` syntax into a production config without the corresponding trusted secret-reference resolver.** Illustrative paths and resource names in this ADR are not published configuration fields.
 
@@ -157,16 +191,16 @@ For Kubernetes mode: set `controlPlane.backend: kubernetes`, reconcile provider-
 3. Kubernetes API loss pauses management reconciliation but does **not** force an already-running data plane to call Kubernetes for mail operations or invalidate its last-known-good snapshot before the specified freshness deadline.
 4. Secret RBAC, encryption-at-rest configuration, rotation and connection-to-Secret reference integrity are enforced. An operator with access to management CRDs does not automatically receive Corvi OAuth token/signing secrets or stored mail.
 5. Minimal standalone gateway with `ephemeral` state and external identity credential requires no DB or external services; integrated Corvi OAuth issuer, durable Tasks or durable queue cannot be enabled without persistent storage.
-2. `sqlite` mode survives restart with client grants, refresh families, revoked tokens, upstream connection state and idempotent queued submissions intact, including WAL checkpoint/crash tests.
-3. `postgres` mode coordinates multiple replicas' issuer state, refresh rotation, queue claims and JMAP/IMAP sync ownership with no duplicate token refresh or queue ownership.
-4. A DB dump, ordinary config snapshot, CRD dump or S3 object listing does **not** disclose upstream OAuth refresh tokens or provider passwords without separately protected key material.
-5. Wrong/missing wrapping key fails closed; key rotation, schema migration, backup and restore are tested; old revoked grants cannot be silently revived.
-6. Sensitive message classifications, hidden-only changes, per-client filtered search, count/thread/attachment paths and new policy generations do not leak through shared indexes, object URLs or caches.
-7. Default mode stores no inbound raw mail. Opt-in stored mail is encrypted, bounded, tied to consent/retention and erased/inaccessible after account unlink or identity revocation as appropriate.
-8. Direct-relay mode explicitly reports non-durable replay limits; durable queue mode reserves idempotency and payload before acknowledgments and preserves `unknown` results through crashes.
-9. SQLite network-share/multi-writer setups are rejected, and PostgreSQL loses freshness fail-closed for authorizations needing up-to-date grants.
-10. Blob upload failures leave recoverable pending records; orphan/blob TTL cleanup does not remove still-pending authorized submissions.
-11. Secrets, PII and raw mail cannot appear in status/telemetry, normal error payloads or public MCP context resources.
+6. `sqlite` mode survives restart with client grants, refresh families, revoked tokens, upstream connection state and idempotent queued submissions intact, including WAL checkpoint/crash tests.
+7. `postgres` mode coordinates multiple replicas' issuer state, refresh rotation, queue claims and JMAP/IMAP sync ownership with no duplicate token refresh or queue ownership.
+8. A DB dump, ordinary config snapshot, CRD dump or S3 object listing does **not** disclose upstream OAuth refresh tokens or provider passwords without separately protected key material.
+9. Wrong/missing wrapping key fails closed; key rotation, schema migration, backup and restore are tested; old revoked grants cannot be silently revived.
+10. Sensitive message classifications, hidden-only changes, per-client filtered search, count/thread/attachment paths and new policy generations do not leak through shared indexes, object URLs or caches.
+11. Default mode stores no inbound raw mail. Opt-in stored mail is encrypted, bounded, tied to consent/retention and erased/inaccessible after account unlink or identity revocation as appropriate.
+12. Direct-relay mode explicitly reports non-durable replay limits; durable queue mode reserves idempotency and payload before acknowledgments and preserves `unknown` results through crashes.
+13. SQLite network-share/multi-writer setups are rejected, and PostgreSQL loses freshness fail-closed for authorizations needing up-to-date grants.
+14. Blob upload failures leave recoverable pending records; orphan/blob TTL cleanup does not remove still-pending authorized submissions.
+15. Secrets, PII and raw mail cannot appear in status/telemetry, normal error payloads or public MCP context resources.
 
 ## Consequences
 

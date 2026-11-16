@@ -51,6 +51,31 @@ The existing SMTP AUTH listener can call the same authorized `MailSubmitter` ser
 
 ## 3. Session discovery, account selection and credentials
 
+Proposed standalone configuration example (the schema is a **design contract**, not implemented configuration):
+
+```yaml
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailboxTransport
+read:
+  protocol: jmap
+  sessionUrl: https://api.fastmail.com/jmap/session
+  account:
+    mode: primaryForCapability
+    capability: urn:ietf:params:jmap:mail
+  authentication: apiToken
+  credentialRef: secret://fastmail/jmap
+submission:
+  protocol: jmap
+  sessionSource: reuseRead
+  account:
+    mode: primaryForCapability
+    capability: urn:ietf:params:jmap:submission
+  identitySelection:
+    selection: byExactEmail
+```
+
+The `secret://fastmail/jmap` reference is illustrative; Corvi must resolve it through configured trusted secret backends. The upstream token must include submission permissions for the `submission: jmap` variant; otherwise configure `submission: disabled` or a separately provisioned SMTP sender. JMAP's `accountId` and sender `Identity.id` are validated from the authenticated session and never inferred from a requested Corvi `identityId`.
+
 A normalized JMAP transport descriptor supplies:
 
 - A configured, HTTPS JMAP Session URL, or an explicitly enabled RFC 8620 `/.well-known/jmap` discovery origin; **do not assume** every provider uses Fastmail's URL.

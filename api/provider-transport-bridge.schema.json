@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Corvi provider local transport bridge dependency (proposed)",
+  "description": "Typed descriptor for provider plugin bridge requirements. Transport manifests and plugin discovery responses are untrusted inputs; install image/secret/network authorization is a separate admin-controlled decision. Based on ADR-0006. This schema is not an implemented API.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "transport"
+  ],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "corvi.naktis.dev/v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "ProviderTransportDependency"
+    },
+    "transport": {
+      "type": "object",
+      "properties": {
+        "topology": {
+          "type": "string",
+          "const": "localBridge"
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "imap",
+              "smtp"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "existing",
+                "managed"
+              ]
+            },
+            "image": {
+              "type": "string",
+              "pattern": "^[^\\s@]+@sha256:[a-fA-F0-9]{64}$",
+              "description": "OCI digest-pinned bridge runtime image. This reference is never permission to start it."
+            },
+            "placement": {
+              "type": "string",
+              "enum": [
+                "colocatedNetworkNamespace",
+                "externalTrustedEndpoint"
+              ]
+            },
+            "state": {
+              "type": "object",
+              "properties": {
+                "persistent": {
+                  "type": "boolean"
+                },
+                "accountScope": {
+                  "type": "string",
+                  "enum": [
+                    "perPhysicalMailbox",
+                    "sharedMultiAccount"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "persistent",
+                "accountScope"
+              ]
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "exposure": {
+                  "type": "string",
+                  "enum": [
+                    "loopbackOnly",
+                    "authenticatedNetwork"
+                  ]
+                },
+                "imap": {
+                  "$ref": "#/$defs/transportEndpoint"
+                },
+                "smtp": {
+                  "$ref": "#/$defs/transportEndpoint"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "exposure"
+              ]
+            },
+            "readiness": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "protocolHandshake",
+                    "healthProbe",
+                    "manual"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "type"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "placement",
+            "state",
+            "endpoint",
+            "readiness"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "mode": {
+                    "const": "managed"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              },
+              "then": {
+                "required": [
+                  "image"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "placement": {
+                    "const": "colocatedNetworkNamespace"
+                  }
+                },
+                "required": [
+                  "placement"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "endpoint": {
+                    "properties": {
+                      "exposure": {
+                        "const": "loopbackOnly"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "onboarding": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "interactiveOrPreprovisioned",
+                "interactiveOnly",
+                "preprovisioned"
+              ]
+            },
+            "automationSupported": {
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "unknown"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "automationSupported"
+          ]
+        },
+        "secretInputs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+              },
+              "class": {
+                "type": "string",
+                "enum": [
+                  "bridgeSession",
+                  "bridgeAccount",
+                  "bridgeIMAP",
+                  "bridgeSMTP",
+                  "certificate",
+                  "keyring"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "class"
+            ]
+          }
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "peerVerification": {
+              "type": "string",
+              "enum": [
+                "pinnedCertificateOrTrustedCA",
+                "trustedCA",
+                "pinnedCertificate"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "peerVerification"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "topology",
+        "protocols",
+        "runtime",
+        "onboarding",
+        "tls"
+      ]
+    }
+  },
+  "$defs": {
+    "transportEndpoint": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "description": "Desired/local placement hint only; validated runtime endpoint comes from transport resolver."
+        },
+        "portRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "portRef"
+          ],
+          "not": {
+            "required": [
+              "port"
+            ]
+          }
+        },
+        {
+          "required": [
+            "port"
+          ],
+          "not": {
+            "required": [
+              "portRef"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

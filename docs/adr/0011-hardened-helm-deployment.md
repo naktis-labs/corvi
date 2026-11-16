@@ -173,10 +173,10 @@ Operator RBAC design:
 9. Optional embedded OAuth issuer, queue, Tasks and JMAP/IMAP checkpoints use configured state with SQLite single-owner or PostgreSQL HA as appropriate, never the operator's CRD status store.
 10. Generated application credential Secrets have safe custom names/annotations, full and accurate connection bundles, atomic mode-switch rotation and no broad Secret-write privileges on gateway/plugin Pods. A custom-name collision must not overwrite an existing Secret (ADR-0014).
 11. Image/supply-chain tests reject mutable `latest`, untrusted plugin digest, malformed signature, unsupported non-root image and missing SBOM per published release gate.
-11. Chart upgrade/rollback and CRD conversion are tested independently; no surprise credential/PVC deletion, accidental privileged new hook or restart of active bridge accounts.
-12. Admission policies and deployment scans refuse securityContext override via values, `rawResources`, arbitrary sidecars and unmanaged operator-generated workloads.
-13. Operator-managed **CorviGateway** instances produce the same restricted no-token Pods as app-template gateways; a Helm-owned resource cannot be adopted or modified by the operator, and SQLite single-writer mode cannot scale beyond one replica (ADR-0012).
-14. A provider optionally attaches through **`spec.gatewayRef`**; absent gatewayRef means provider-management-only without any gateway Pod/CRD. Bound providers attach to one gateway, never two; mailbox/identity required parent refs resolve recursively, with no duplicated gateway lists or unsafe attach/detach/reparenting (ADR-0013).
+12. Chart upgrade/rollback and CRD conversion are tested independently; no surprise credential/PVC deletion, accidental privileged new hook or restart of active bridge accounts.
+13. Admission policies and deployment scans refuse securityContext override via values, `rawResources`, arbitrary sidecars and unmanaged operator-generated workloads.
+14. Operator-managed **CorviGateway** instances produce the same restricted no-token Pods as app-template gateways; a Helm-owned resource cannot be adopted or modified by the operator, and SQLite single-writer mode cannot scale beyond one replica (ADR-0012).
+15. A provider optionally attaches through **`spec.gatewayRef`**; absent gatewayRef means provider-management-only without any gateway Pod/CRD. Bound providers attach to one gateway, never two; mailbox/identity required parent refs resolve recursively, with no duplicated gateway lists or unsafe attach/detach/reparenting (ADR-0013).
 
 ## References
 

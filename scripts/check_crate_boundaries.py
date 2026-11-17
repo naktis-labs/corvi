@@ -30,7 +30,15 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATES = ROOT / "crates"
 
 # Crates that belong to the data plane.
-DATA_PLANE = {"mail-core", "mail-policy", "mail-imap", "mail-smtp", "mail-jmap", "mail-api"}
+DATA_PLANE = {
+    "mail-core",
+    "mail-policy",
+    "mail-config",
+    "mail-imap",
+    "mail-smtp",
+    "mail-jmap",
+    "mail-api",
+}
 
 # Crates that belong to the control plane or provider management.
 CONTROL_PLANE = {"mail-operator", "mail-admin", "provider-migadu"}
@@ -54,10 +62,11 @@ FORBIDDEN_IN_DATA_PLANE = {
     "openidconnect",
 }
 
-# The exact dependency sets the two implemented crates are allowed to have.
+# The exact dependency sets the implemented crates are allowed to have.
 ALLOWED = {
     "mail-core": {"serde"},
     "mail-policy": {"mail-core", "regex", "serde"},
+    "mail-config": {"mail-core", "serde", "serde_yaml"},
 }
 
 # Manifest lines that document a deliberate waiver.

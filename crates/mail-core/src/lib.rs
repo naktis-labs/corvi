@@ -15,11 +15,13 @@
 
 pub mod action;
 pub mod classification;
+pub mod grant;
 pub mod identity;
 pub mod message;
 
 pub use action::{Action, ParseActionError};
 pub use classification::{Class, Classification, Confidence, Evidence};
+pub use grant::{IdentityGrant, ScopedGrants};
 pub use identity::{IdentityId, IsolationMode, MailIdentity, ParseIdentityIdError};
 pub use message::{
     Address, AttachmentMeta, Link, MailboxRef, MessageId, NormalizedMessage, Provenance,

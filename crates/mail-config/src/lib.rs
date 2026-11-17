@@ -13,7 +13,7 @@
 //! identities never gains the union of their permissions.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -41,9 +41,20 @@ pub enum ValidationError {
     /// The snapshot declared no identities.
     NoIdentities,
     /// An identity was malformed or bound to nothing.
+    ///
+    /// A control character in an address or mailbox is refused here rather
+    /// than trimmed: an address reaches SMTP header construction and a
+    /// mailbox reaches IMAP command construction, so a newline in either is
+    /// an injection vector.
     InvalidIdentityBinding,
     /// Two identities shared one identifier.
     DuplicateIdentity,
+    /// Two identities claimed the same address or alias.
+    ///
+    /// Which of them owns a message addressed there would be undefined, and
+    /// identity isolation is a confidentiality boundary, so an ambiguous
+    /// binding is refused rather than resolved arbitrarily.
+    DuplicateAddress,
     /// A credential had an empty or duplicated identifier.
     DuplicateCredential,
     /// A grant referred to an identity the snapshot does not define.
@@ -62,6 +73,9 @@ impl fmt::Display for ValidationError {
             ValidationError::NoIdentities => f.write_str("no identities configured"),
             ValidationError::InvalidIdentityBinding => f.write_str("invalid identity binding"),
             ValidationError::DuplicateIdentity => f.write_str("duplicate identity identifier"),
+            ValidationError::DuplicateAddress => {
+                f.write_str("two identities claim the same address or alias")
+            }
             ValidationError::DuplicateCredential => f.write_str("duplicate credential identifier"),
             ValidationError::UnknownIdentity => {
                 f.write_str("grant references an identity the snapshot does not define")
@@ -266,6 +280,13 @@ pub enum AuthzError {
     Expired,
     /// The selected identity is not defined by the active snapshot.
     UnknownIdentity,
+    /// The presented secret did not match the credential's secret file, or
+    /// the secret file could not be read.
+    ///
+    /// An unreadable secret file denies access rather than granting it, so
+    /// an unreadable credential and a wrong credential are indistinguishable
+    /// to the caller.
+    InvalidCredential,
     /// The credential does not grant this action on the selected identity.
     NotGranted,
 }
@@ -276,6 +297,7 @@ impl fmt::Display for AuthzError {
             AuthzError::UnknownCredential => f.write_str("unknown credential"),
             AuthzError::Expired => f.write_str("credential expired"),
             AuthzError::UnknownIdentity => f.write_str("unknown identity"),
+            AuthzError::InvalidCredential => f.write_str("credential was not authenticated"),
             AuthzError::NotGranted => f.write_str("action not granted for this identity"),
         }
     }
@@ -306,15 +328,36 @@ impl Snapshot {
             return Err(ValidationError::NoIdentities);
         }
         let mut seen = HashSet::new();
+        let mut claimed: HashMap<String, IdentityId> = HashMap::new();
         for identity in &self.identities {
             if IdentityId::from_str(identity.id.as_str()).is_err()
                 || identity.mailbox.as_str().trim().is_empty()
                 || identity.address.trim().is_empty()
+                || has_control_character(identity.mailbox.as_str())
+                || has_control_character(&identity.address)
             {
                 return Err(ValidationError::InvalidIdentityBinding);
             }
             if !seen.insert(identity.id.clone()) {
                 return Err(ValidationError::DuplicateIdentity);
+            }
+            for address in std::iter::once(&identity.address).chain(identity.aliases.iter()) {
+                if has_control_character(address) {
+                    return Err(ValidationError::InvalidIdentityBinding);
+                }
+                let key = address.trim().to_ascii_lowercase();
+                if key.is_empty() {
+                    continue;
+                }
+                match claimed.insert(key, identity.id.clone()) {
+                    Some(owner) if owner != identity.id => {
+                        // Two identities claim one address, so which of them
+                        // owns a message addressed there is undefined.
+                        return Err(ValidationError::DuplicateAddress);
+                    }
+                    Some(_) => {}
+                    None => {}
+                }
             }
         }
         let mut credential_ids = HashSet::new();
@@ -395,13 +438,27 @@ impl SnapshotStore {
     /// This is the action a SIGHUP triggers. The file is read and validated as
     /// a complete replacement; if anything about it is wrong, the previously
     /// activated generation stays in service untouched.
+    ///
+    /// Returns `true` when a new generation was activated and `false` when
+    /// the file was already active, which is what a SIGHUP after an edit that
+    /// changed nothing produces. A stale or invalid file is an error, because
+    /// an unchanged file is not wrong.
     pub fn reload_from_path(&self, path: &Path) -> Result<bool, ReloadError> {
         let snapshot = Snapshot::from_file(path)?;
-        self.activate(snapshot).map_err(ReloadError::Activate)?;
-        Ok(true)
+        match self.activate(snapshot) {
+            Ok(()) => Ok(true),
+            Err(ActivationError::StaleGeneration) => Ok(false),
+            Err(error) => Err(ReloadError::Activate(error)),
+        }
     }
 
-    /// Authorize one action against one explicitly selected identity.
+    /// Authenticate a credential and authorize one action against one
+    /// explicitly selected identity.
+    ///
+    /// The presented secret is verified against the credential's secret file
+    /// before any grant is consulted, so this method cannot be used to
+    /// authorize a principal that was never authenticated. A secret file that
+    /// cannot be read denies access rather than granting it.
     ///
     /// The credential's grants are consulted for the selected identity only.
     /// A credential that may act on several identities therefore gains no
@@ -409,6 +466,7 @@ impl SnapshotStore {
     pub fn authorize(
         &self,
         credential_id: &str,
+        presented_secret: &str,
         identity: &IdentityId,
         action: Action,
         now: u64,
@@ -420,6 +478,10 @@ impl SnapshotStore {
         if credential.is_expired(now) {
             return Err(AuthzError::Expired);
         }
+        match credential.authenticate(presented_secret) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return Err(AuthzError::InvalidCredential),
+        }
         if active.identity(identity).is_none() {
             return Err(AuthzError::UnknownIdentity);
         }
@@ -428,6 +490,15 @@ impl SnapshotStore {
         }
         Ok(())
     }
+}
+
+/// Whether a value carries a control character.
+///
+/// An address reaches SMTP header construction and a mailbox reaches IMAP
+/// command construction, so a newline in either is an injection vector rather
+/// than a cosmetic problem.
+fn has_control_character(value: &str) -> bool {
+    value.chars().any(|c| c.is_control())
 }
 
 /// Where a reloaded snapshot is read from.

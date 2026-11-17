@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/mail-core",
     "crates/mail-config",
+    "crates/mail-imap",
     "crates/mail-policy",
+    "crates/mail-smtp",
 ]
 
 [workspace.package]

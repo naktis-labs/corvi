@@ -112,7 +112,14 @@ pub fn read_secret_file(path: &Path) -> Result<SecretValue, SecretError> {
     check_permissions(&metadata)?;
     check_owner(&metadata)?;
     let contents = fs::read_to_string(path).map_err(SecretError::Io)?;
-    Ok(SecretValue::new(contents.trim_end_matches(['\n', '\r'])))
+    // Exactly one trailing newline is stripped, because that is what a
+    // secret file written by `echo` or by a secret projection carries. A
+    // value that legitimately ends in further newlines keeps them.
+    let trimmed = match contents.strip_suffix('\n') {
+        Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
+        None => contents.as_str(),
+    };
+    Ok(SecretValue::new(trimmed))
 }
 
 #[cfg(unix)]

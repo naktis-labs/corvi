@@ -57,6 +57,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-imap"
+version = "0.1.0"
+dependencies = [
+ "mail-core",
+]
+
+[[package]]
 name = "mail-policy"
 version = "0.1.0"
 dependencies = [
@@ -64,6 +71,13 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "mail-smtp"
+version = "0.1.0"
+dependencies = [
+ "mail-core",
 ]
 
 [[package]]

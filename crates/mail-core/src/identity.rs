@@ -5,6 +5,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::message::NormalizedMessage;
+
 /// Stable identifier of a virtual mail identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -92,6 +94,7 @@ impl IsolationMode {
 /// A virtual mail identity: a sender persona and a filtered view of a
 /// physical upstream mailbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MailIdentity {
     /// Stable identifier used by REST, MCP and credential references.
     pub id: IdentityId,
@@ -122,6 +125,30 @@ impl MailIdentity {
                 .aliases
                 .iter()
                 .any(|alias| alias.eq_ignore_ascii_case(candidate))
+    }
+
+    /// Whether a message belongs to this identity.
+    ///
+    /// The evidence required depends on the isolation mode, and a mode that
+    /// cannot be satisfied denies the message rather than accepting it:
+    ///
+    /// - `verified` requires provider-recorded delivery metadata naming this
+    ///   identity. A message-authored header is not that evidence, so a
+    ///   transport that cannot record it makes the message invisible.
+    /// - `dedicated` requires the message to live in the identity's own
+    ///   physical mailbox.
+    /// - `best_effort` accepts any message that names the identity among its
+    ///   visible addresses, and claims no confidentiality.
+    pub fn owns_message(&self, message: &NormalizedMessage) -> bool {
+        match self.isolation {
+            IsolationMode::Verified => message
+                .trusted_recipient()
+                .is_some_and(|recipient| self.matches_address(&recipient.address)),
+            IsolationMode::Dedicated => message.mailbox == self.mailbox,
+            IsolationMode::BestEffort => message
+                .visible_addresses()
+                .any(|address| self.matches_address(&address.address)),
+        }
     }
 }
 

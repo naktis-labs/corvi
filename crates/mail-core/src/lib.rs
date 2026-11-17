@@ -18,12 +18,21 @@ pub mod classification;
 pub mod grant;
 pub mod identity;
 pub mod message;
+pub mod mime;
+pub mod testing;
+pub mod transport;
 
 pub use action::{Action, ParseActionError};
 pub use classification::{Class, Classification, Confidence, Evidence};
-pub use grant::{IdentityGrant, ScopedGrants};
+pub use grant::{GrantDecision, IdentityGrant, ScopedGrants};
 pub use identity::{IdentityId, IsolationMode, MailIdentity, ParseIdentityIdError};
 pub use message::{
     Address, AttachmentMeta, Link, MailboxRef, MessageId, NormalizedMessage, Provenance,
     TrustedRecipient,
+};
+pub use mime::{MimeError, MimeLimits, MimeNode};
+pub use transport::{
+    BlobContent, BlobReader, BlobRequest, ByteStream, Change, ChangeCursor, ChangeKind, ChangeSet,
+    ListQuery, MailChangeTracker, MailReader, MailSubmitter, MessagePage, OutgoingMessage,
+    SubmissionReceipt, TransportError, TransportLimits, UntrustedMessage,
 };

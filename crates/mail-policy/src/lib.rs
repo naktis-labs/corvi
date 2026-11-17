@@ -21,9 +21,9 @@
 pub mod classify;
 pub mod decision;
 pub mod engine;
+pub mod html;
 pub mod pattern;
 pub mod rule;
-pub mod sanitize;
 
 pub use decision::{
     AttachmentAccess, Decision, DefaultVisibility, ExternalLinkPolicy, HtmlRendering, MatchedRule,

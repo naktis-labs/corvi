@@ -49,7 +49,22 @@ fn properties() -> Vec<&'static str> {
         "receivedAt",
         "keywords",
         "threadId",
+        "attachments",
     ]
+}
+
+/// Whether the upstream says the message is in the mailbox.
+///
+/// The upstream's answer is not trusted to have filtered the query. A
+/// message the upstream places in another mailbox is not a message of the
+/// requested mailbox, so it is not disclosed.
+fn in_mailbox(email: &Value, mailbox_id: &str) -> bool {
+    email
+        .get("mailboxIds")
+        .and_then(Value::as_object)
+        .and_then(|ids| ids.get(mailbox_id))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 /// Read a page of messages from one mailbox.
@@ -120,20 +135,24 @@ pub fn list_messages(
         .with_id("m1"),
     );
     let get_response = client.call(&get_request)?;
-    let messages: Vec<UntrustedMessage> = get_response
+    let list: Vec<Value> = get_response
         .ok("m1")?
         .get("list")
         .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .map(|email| to_untrusted(email, mailbox))
-                .collect()
-        })
+        .cloned()
         .unwrap_or_default();
-    let next_cursor = if (messages.len() as u32) < limit {
+    let messages: Vec<UntrustedMessage> = list
+        .iter()
+        .filter(|email| in_mailbox(email, &mailbox_id))
+        .map(|email| to_untrusted(email, mailbox))
+        .collect();
+    // The cursor counts the messages the upstream answered with, not the
+    // messages that survived the containment check: a filtered message must
+    // not end the page early.
+    let next_cursor = if (list.len() as u32) < limit {
         None
     } else {
-        Some((position + messages.len()).to_string())
+        Some((position + list.len()).to_string())
     };
     Ok(MessagePage {
         messages,
@@ -148,6 +167,7 @@ pub fn get_message(
     mailbox: &MailboxRef,
     id: &MessageId,
 ) -> Result<UntrustedMessage, JmapError> {
+    let mailbox_id = resolve_mailbox(client, account_id, mailbox)?.ok_or(JmapError::NotFound)?;
     let request = JmapRequest::new(vec![CORE.to_owned(), MAIL.to_owned()]).with(
         MethodCall::new(
             "Email/get",
@@ -169,9 +189,113 @@ pub fn get_message(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    list.first()
+    list.iter()
+        .find(|email| {
+            email.get("id").and_then(Value::as_str) == Some(id.as_str())
+                && in_mailbox(email, &mailbox_id)
+        })
         .map(|email| to_untrusted(email, mailbox))
         .ok_or(JmapError::NotFound)
+}
+
+#[cfg(test)]
+mod download_template_tests {
+    use super::*;
+
+    #[test]
+    fn template_components_are_encoded_and_unknown_placeholders_rejected() {
+        let expanded = expand_download_template(
+            "https://example.test/{accountId}/{blobId}/{name}",
+            "a/b",
+            "x?y",
+        )
+        .expect("known placeholders expand safely");
+        assert!(expanded.contains("a%2Fb"));
+        assert!(expanded.contains("x%3Fy"));
+        assert!(
+            expand_download_template("https://example.test/{accountId}/{blobId}/{evil}", "a", "b")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn template_segments_are_percent_encoded_for_a_path() {
+        let expanded = expand_download_template(
+            "https://example.test/{accountId}/{blobId}/{name}",
+            "account one",
+            "..",
+        )
+        .expect("known placeholders expand safely");
+        // A space is a space in a path, not a form field.
+        assert!(
+            expanded.contains("account%20one"),
+            "the space is percent encoded: {expanded}"
+        );
+        assert!(
+            !expanded.contains(' '),
+            "no raw space reaches the URL: {expanded}"
+        );
+        // A dot segment would walk out of the blob path.
+        assert!(
+            expanded.contains("%2E%2E"),
+            "a dot segment is encoded: {expanded}"
+        );
+        assert!(
+            !expanded.contains("/.."),
+            "the blob path cannot be walked: {expanded}"
+        );
+    }
+}
+
+fn expand_download_template(
+    template: &str,
+    account_id: &str,
+    blob_id: &str,
+) -> Result<String, JmapError> {
+    if !template.contains("{accountId}")
+        || !template.contains("{blobId}")
+        || template.matches('{').count() != template.matches('}').count()
+        || template
+            .replace("{accountId}", "")
+            .replace("{blobId}", "")
+            .replace("{name}", "")
+            .contains(['{', '}'])
+    {
+        return Err(JmapError::Protocol(
+            "the download URL template is malformed".to_owned(),
+        ));
+    }
+    let account = encode_path_segment(account_id);
+    let blob = encode_path_segment(blob_id);
+    Ok(template
+        .replace("{accountId}", &account)
+        .replace("{blobId}", &blob)
+        .replace("{name}", "blob"))
+}
+
+/// Percent-encode one path segment.
+///
+/// The placeholders are path segments, not form fields: a space is `%20` and
+/// not `+`, and a segment that is only dots is encoded so that it cannot be
+/// read as a path traversal when the URL is normalized.
+fn encode_path_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            b'.' => encoded.push('.'),
+            other => {
+                encoded.push('%');
+                encoded.push_str(&format!("{other:02X}"));
+            }
+        }
+    }
+    if segment == "." || segment == ".." {
+        return encoded.replace('.', "%2E");
+    }
+    encoded
 }
 
 /// Download the bytes of one blob.
@@ -185,10 +309,7 @@ pub fn read_blob(
         .session()
         .and_then(|session| session.download_url().map(str::to_owned))
         .ok_or_else(|| JmapError::Protocol("the session offers no download URL".to_owned()))?;
-    let url = template
-        .replace("{accountId}", account_id)
-        .replace("{blobId}", &request.blob_id)
-        .replace("{name}", "blob");
+    let url = expand_download_template(&template, account_id, &request.blob_id)?;
     let response = client.download(&url)?;
     if response.body.len() as u64 > limits.max_blob_bytes {
         return Err(JmapError::TooLarge {

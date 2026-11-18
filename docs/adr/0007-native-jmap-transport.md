@@ -106,6 +106,7 @@ Build controlled MIME/email content from the authorized Corvi `MailIdentity` and
 
 - The existing Corvi idempotency key is bound to the principal, Corvi identity and canonical message. JMAP method-call IDs, creation IDs and state tokens are **not** durable exactly-once delivery guarantees. Persist intent/receipt through Corvi's transactional submission store when durable idempotency is promised (ADR-0010), and reconcile state before repeating a call with ambiguous outcome.
 - Network interruption after an `EmailSubmission/set` may leave the result `unknown`. Do not automatically submit a second Email, retry blindly, or report delivered. A successful upstream EmailSubmission response means **upstream accepted for processing**, not remote recipient delivery.
+- Once the submission request has been dispatched, **every** failure that leaves no definite answer is `unknown`: a lost or unusable answer, an oversized response, a refused redirect, a transport failure. Only an explicit refusal - a method-level error or `notCreated` - is a definite failure. Reporting an unknown outcome as a failure invites a duplicate delivery.
 - A JMAP mail read token does not grant JMAP submission. Refresh-token rotation, revoked grants and insufficient scope trigger `needsReauthorization` and fail closed rather than falling back to a less secure credential. In `read: jmap`/`submission: smtp` mode use a **separately configured** SMTP credential with independent sender validation, never automatic fallback from failing JMAP submission.
 - If mailbox filing/cleanup fails after a successful submission, report the correct submission status and a separate cleanup diagnostic. Do not resend.
 - Outgoing SMTP AUTH compatibility must apply the same identity, recipient, SMTP envelope, MRTR/approval (where relevant to MCP) and application policy as REST/MCP; a JMAP upstream must not bypass these rules.
@@ -149,23 +150,36 @@ Initial capability status values should differentiate `UnsupportedTransport`, `C
 The client exists in [`crates/mail-jmap`](../../crates/mail-jmap), and the gateway
 adapter exists in
 [`crates/mail-api/src/jmap_upstream.rs`](../../crates/mail-api/src/jmap_upstream.rs).
-What is implemented:
+Implemented protocol and fixture behavior (not a live network transport):
 
-- Session discovery and validation: capabilities, accounts, primary accounts and
-  account capabilities, with the account selector checked against the
-  **authenticated** session.
-- The URL trust rules of section 3: `https` only, an origin allowlist, host
-  resolution checked against the private and metadata ranges, and redirects
-  confined to the origin the client already trusted.
+- Session discovery and validation parses capabilities, accounts, primary accounts and
+  account capabilities. Calls validate requested account IDs/capabilities against
+  the discovered session; the caller must still bind that session to its authenticated
+  upstream credential and configured account selector.
+- URL policy checks enforce `https` by default, an origin allowlist, address classification
+  and same-origin redirect rules. Relative redirects are resolved against the current URL.
+  DNS results are not pinned by any shipped live transport, so non-fixture network requests
+  fail closed; the fixture transport performs no network I/O, and it can also be built to
+  declare that it does not pin, so the gate is exercised rather than assumed.
 - `Mailbox/get`, `Email/query`, `Email/get`, bounded blob downloads and
   `Email/queryChanges`, over `mail-core`'s `MailReader`, `BlobReader` and
-  `MailChangeTracker` interfaces.
+  `MailChangeTracker` interfaces. A message is disclosed only when the
+  upstream reports it in the requested mailbox: the upstream's own filtering
+  is not trusted, so a message it places in another mailbox is dropped
+  rather than stamped with the requested one. The attachment properties are
+  requested, so the attachment mapping is reachable.
 - `Identity/get`, `Email/set` and `EmailSubmission/set`, over `mail-core`'s
   `MailSubmitter` interface, with the upstream sending identity selected by
   address and an ambiguous outcome reported as unknown rather than retried.
-- The gateway adapter routes each identity to its JMAP account, keeps the
-  upstream identifiers private behind opaque Corvi identifiers, and passes the
-  identities it does not serve to another upstream.
+  The client tracks whether a request was dispatched, so a failure after the
+  dispatch is unknown unless the upstream refused outright.
+- The gateway adapter routes configured identities to their JMAP accounts, maps
+  upstream IDs to keyed, identity/account-scoped random-looking Corvi IDs in a bounded,
+  process-local cache, and passes identities it does not serve to another upstream.
+  The identity and the account are kept apart in that scope, so no two scopes can
+  collide, and the cache evicts one scope at a time, so one identity cannot invalidate
+  another's identifiers. These IDs expire/evict with the cache and are not durable
+  across restart; unknown IDs fail closed.
 
 What is **not** implemented, and is therefore not claimed:
 

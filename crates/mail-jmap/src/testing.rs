@@ -28,16 +28,38 @@ struct Route {
 }
 
 /// A transport that answers from a table of routes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FixtureTransport {
     routes: Vec<Route>,
     log: Arc<Mutex<Vec<HttpRequest>>>,
+    enforces_address_pinning: bool,
+}
+
+impl Default for FixtureTransport {
+    fn default() -> Self {
+        Self {
+            routes: Vec::new(),
+            log: Arc::new(Mutex::new(Vec::new())),
+            // The fixture performs no network I/O, so it cannot fail to pin
+            // an address it never resolves.
+            enforces_address_pinning: true,
+        }
+    }
 }
 
 impl FixtureTransport {
     /// A transport that answers nothing.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A transport that cannot bind connections to the validated address.
+    ///
+    /// The client refuses a transport that does not enforce validated DNS
+    /// address pinning, so this exists to prove that the gate fails closed.
+    pub fn without_address_pinning(mut self) -> Self {
+        self.enforces_address_pinning = false;
+        self
     }
 
     /// A handle on the requests the client made.
@@ -96,6 +118,7 @@ impl FixtureTransport {
         Self {
             routes,
             log: self.log,
+            enforces_address_pinning: self.enforces_address_pinning,
         }
     }
 
@@ -122,11 +145,16 @@ impl FixtureTransport {
         Self {
             routes,
             log: self.log,
+            enforces_address_pinning: self.enforces_address_pinning,
         }
     }
 }
 
 impl HttpTransport for FixtureTransport {
+    fn enforces_address_pinning(&self) -> bool {
+        self.enforces_address_pinning
+    }
+
     fn send(&mut self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
         if let Ok(mut log) = self.log.lock() {
             log.push(request.clone());

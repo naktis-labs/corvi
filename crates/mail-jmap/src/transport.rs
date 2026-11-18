@@ -38,7 +38,7 @@ impl Default for TransportLimits {
 }
 
 /// One HTTP request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     /// The HTTP method.
     pub method: String,
@@ -48,6 +48,28 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// The request body.
     pub body: Vec<u8>,
+}
+
+impl fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let headers: Vec<_> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                if name.eq_ignore_ascii_case("authorization") {
+                    (name, "[redacted]")
+                } else {
+                    (name, value.as_str())
+                }
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -92,6 +114,12 @@ impl HttpResponse {
 
 /// The transport the client speaks through.
 pub trait HttpTransport: fmt::Debug + Send {
+    /// Whether this transport binds connections to the validated addresses.
+    /// Fixture transports may return true because they perform no network I/O.
+    fn enforces_address_pinning(&self) -> bool {
+        false
+    }
+
     /// Send one request and return the response.
     ///
     /// A transport that cannot tell whether the request reached the server

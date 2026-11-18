@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use mail_core::{MailSubmitter, OutgoingMessage, SubmissionReceipt, TransportError};
 
-use crate::client::JmapClient;
+use crate::client::{CallFailure, JmapClient};
 use crate::error::JmapError;
 use crate::protocol::{JmapRequest, MethodCall};
 use crate::session::{CORE, MAIL, SUBMISSION};
@@ -103,17 +103,34 @@ pub fn submit_message(
         )
         .with_id("m0"),
     );
-    // The submission is the moment the message leaves. A transport failure
-    // from here on is ambiguous, not a failure: the upstream may have
-    // accepted the message and lost the answer.
-    let response = match client.call(&submit_request) {
+    // The submission is the moment the message leaves. A failure from here
+    // on that carries no definite answer is ambiguous, not a failure: the
+    // upstream may have accepted the message and lost the answer.
+    let response = match client.call_dispatched(&submit_request) {
         Ok(response) => response,
-        Err(JmapError::UpstreamUnavailable(reason)) => {
-            return Err(JmapError::Ambiguous(reason));
+        // The upstream answered and refused, or the request never left the
+        // client: the message was not sent.
+        Err(CallFailure::Failed(error)) => return Err(error),
+        Err(CallFailure::Unknown(error)) => {
+            return Err(JmapError::Ambiguous(format!(
+                "the outcome of the submission is unknown: {error}"
+            )));
         }
-        Err(error) => return Err(error),
     };
-    let result = response.ok("m0")?;
+    let result = match response.ok("m0") {
+        Ok(result) => result,
+        // A refusal is a definite answer: the upstream processed the request
+        // and said no, so the message was not sent.
+        Err(JmapError::Rejected(reason)) => return Err(JmapError::Rejected(reason)),
+        Err(JmapError::NotFound) => return Err(JmapError::NotFound),
+        // The response carries no answer for the call, so whether the
+        // submission happened cannot be determined.
+        Err(error) => {
+            return Err(JmapError::Ambiguous(format!(
+                "the upstream answer was unusable: {error}"
+            )));
+        }
+    };
     if let Some(reason) = creation_failure(result) {
         return Err(JmapError::Rejected(format!(
             "the upstream refused the submission: {reason}"
@@ -124,7 +141,11 @@ pub fn submit_message(
         .and_then(|created| created.get("send"))
         .and_then(|entry| entry.get("id"))
         .and_then(Value::as_str)
-        .ok_or_else(|| JmapError::Protocol("the upstream created no submission".to_owned()))?
+        .ok_or_else(|| {
+            JmapError::Ambiguous(
+                "the upstream accepted no identifiable submission result".to_owned(),
+            )
+        })?
         .to_owned();
     Ok(SubmissionReceipt {
         id: submission_id,

@@ -32,6 +32,24 @@ fn envelope(method: &str, call_id: &str, arguments: Value) -> Value {
     json!({"methodResponses": [[method, arguments, call_id]]})
 }
 
+/// The emails the upstream answers with, placed in the mailbox the query
+/// asked for.
+///
+/// The shared fixture places the message in the INBOX of the upstream, but
+/// these tests read the `work` identity, whose mailbox is `WORK`. A message
+/// the upstream places in another mailbox is not disclosed, so the fixture
+/// has to agree with the query.
+fn emails() -> Value {
+    let mut emails: Value = serde_json::from_str(EMAILS).expect("a valid answer");
+    for email in emails["list"]
+        .as_array_mut()
+        .expect("the answer lists emails")
+    {
+        email["mailboxIds"] = json!({"mbx-work": true});
+    }
+    emails
+}
+
 /// The upstream the JMAP identity reads from.
 fn jmap_transport() -> FixtureTransport {
     FixtureTransport::new()
@@ -67,11 +85,7 @@ fn jmap_transport() -> FixtureTransport {
         .on_post_body(
             "/jmap/api",
             "\"Email/get\"",
-            envelope(
-                "Email/get",
-                "m1",
-                serde_json::from_str(EMAILS).expect("valid"),
-            ),
+            envelope("Email/get", "m1", emails()),
         )
 }
 

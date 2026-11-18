@@ -16,6 +16,7 @@ use mail_jmap::{
     Credential, HttpRequest,
     client::JmapClient,
     error::JmapError,
+    protocol::{JmapRequest, MethodCall},
     reader::{JmapChangeTracker, JmapReader},
     session::{AccountSelector, CORE, MAIL, SUBMISSION, Session},
     submission::JmapSubmitter,
@@ -141,6 +142,20 @@ fn message() -> OutgoingMessage {
         headers: Vec::new(),
         body: "A body.".to_owned(),
     }
+}
+
+#[test]
+fn the_request_path_rejects_account_not_in_authenticated_session() {
+    let (mut client, log) = discovered(transport());
+    let request = JmapRequest::new(vec![MAIL.to_owned()]).with(MethodCall::new(
+        "Email/query",
+        json!({"accountId": "not-in-session"}),
+    ));
+    let error = client
+        .call(&request)
+        .expect_err("unknown session account is rejected");
+    assert!(matches!(error, JmapError::AccountSelectionInvalid(_)));
+    assert_eq!(requests(&log).len(), 1, "only discovery reached transport");
 }
 
 #[test]
@@ -619,6 +634,35 @@ fn an_ambiguous_submission_is_reported_as_unknown_and_is_not_retried() {
 }
 
 #[test]
+fn malformed_submission_response_is_ambiguous_after_dispatch() {
+    let transport = transport()
+        .on_post_body(
+            "/jmap/api",
+            "\"Identity/get\"",
+            envelope(
+                "Identity/get",
+                "m0",
+                serde_json::from_str(IDENTITIES).unwrap(),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/set\"",
+            envelope("Email/set", "m0", serde_json::from_str(EMAIL_SET).unwrap()),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"EmailSubmission/set\"",
+            json!({"methodResponses": []}),
+        );
+    let (client, _) = discovered(transport);
+    let error = JmapSubmitter::new(client, "acct-personal", "me@example.com")
+        .submit(&message())
+        .expect_err("a dispatched submission with an unusable response has unknown outcome");
+    assert!(matches!(error, TransportError::Ambiguous(_)));
+}
+
+#[test]
 fn a_jmap_failure_never_falls_back_to_another_protocol() {
     let transport = transport()
         .on_post_body(
@@ -681,4 +725,257 @@ fn a_session_object_is_parsed_into_a_validated_session() {
         session.event_source_url(),
         Some("https://api.example.com/jmap/events")
     );
+}
+
+#[test]
+fn credential_debug_never_exposes_bearer_token() {
+    let credential = Credential::bearer("sensitive-test-token");
+    assert!(!format!("{credential:?}").contains("sensitive-test-token"));
+    let http_request = HttpRequest {
+        method: "GET".to_owned(),
+        url: "https://example.test/".to_owned(),
+        headers: vec![(
+            "Authorization".to_owned(),
+            "Bearer sensitive-test-token".to_owned(),
+        )],
+        body: Vec::new(),
+    };
+    assert!(!format!("{http_request:?}").contains("sensitive-test-token"));
+}
+
+#[test]
+fn the_client_and_the_fixture_transport_never_expose_the_credential() {
+    let transport = FixtureTransport::new().on_get(
+        "/jmap/session",
+        serde_json::from_str(SESSION).expect("a valid session"),
+    );
+    // The clone shares the request log, so it shows what the client sent.
+    let handle = transport.clone();
+    let (client, log) = discovered(transport);
+
+    // The client holds the credential and the transport that carries it.
+    let client_debug = format!("{client:?}");
+    assert!(
+        !client_debug.contains("upstream-token"),
+        "the client debug output leaks the credential: {client_debug}"
+    );
+
+    // The fixture transport keeps the requests it was given, and they carry
+    // the credential.
+    let transport_debug = format!("{handle:?}");
+    assert!(
+        !transport_debug.contains("upstream-token"),
+        "the transport debug output leaks the credential: {transport_debug}"
+    );
+
+    // The recorded requests carry it too.
+    let logged = requests(&log);
+    assert_eq!(logged.len(), 1);
+    let log_debug = format!("{logged:?}");
+    assert!(
+        !log_debug.contains("upstream-token"),
+        "the request log leaks the credential: {log_debug}"
+    );
+}
+
+#[test]
+fn an_unusable_submission_response_is_ambiguous_after_dispatch() {
+    let transport = transport()
+        .on_post_body(
+            "/jmap/api",
+            "\"Identity/get\"",
+            envelope(
+                "Identity/get",
+                "m0",
+                serde_json::from_str(IDENTITIES).expect("valid"),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/set\"",
+            envelope(
+                "Email/set",
+                "m0",
+                serde_json::from_str(EMAIL_SET).expect("valid"),
+            ),
+        )
+        .on(
+            "POST",
+            "/jmap/api",
+            mail_jmap::HttpResponse {
+                status: 200,
+                headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                // A truncated body: the upstream may have accepted the
+                // submission and lost the answer.
+                body: b"{\"methodResponses\":".to_vec(),
+            },
+        );
+    let (client, _log) = discovered(transport);
+    let error = JmapSubmitter::new(client, "acct-personal", "me@example.com")
+        .submit(&message())
+        .expect_err("a dispatched submission with an unusable body has an unknown outcome");
+    assert!(matches!(error, TransportError::Ambiguous(_)));
+}
+
+#[test]
+fn a_method_level_error_response_is_a_definite_refusal() {
+    let transport = transport()
+        .on_post_body(
+            "/jmap/api",
+            "\"Identity/get\"",
+            envelope(
+                "Identity/get",
+                "m0",
+                serde_json::from_str(IDENTITIES).expect("valid"),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/set\"",
+            envelope(
+                "Email/set",
+                "m0",
+                serde_json::from_str(EMAIL_SET).expect("valid"),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"EmailSubmission/set\"",
+            json!({"methodResponses": [["error", {"type": "notFound"}, "m0"]]}),
+        );
+    let (client, _log) = discovered(transport);
+    let error = JmapSubmitter::new(client, "acct-personal", "me@example.com")
+        .submit(&message())
+        .expect_err("the upstream refused the submission");
+    assert!(
+        matches!(error, TransportError::Rejected(_)),
+        "a method-level error is a refusal, not an unknown outcome: {error:?}"
+    );
+}
+
+#[test]
+fn list_rejects_a_message_outside_the_requested_mailbox() {
+    let transport = FixtureTransport::new()
+        .on_get("/jmap/session", serde_json::from_str(SESSION).unwrap())
+        .on_post_body(
+            "/jmap/api",
+            "\"Mailbox/get\"",
+            envelope(
+                "Mailbox/get",
+                "m0",
+                json!({"list": [{"id": "work-id", "name": "WORK"}]}),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/query\"",
+            envelope("Email/query", "m0", json!({"ids": ["m1"]})),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/get\"",
+            envelope(
+                "Email/get",
+                "m1",
+                // The upstream answers with a message that lives in another
+                // mailbox.
+                json!({"list": [{"id": "m1", "mailboxIds": {"other-id": true}}]}),
+            ),
+        );
+    let mut client = connected(transport);
+    let page = mail_jmap::reader::list_messages(
+        &mut client,
+        "acct-personal",
+        &MailboxRef::new("WORK"),
+        &ListQuery {
+            limit: 10,
+            cursor: None,
+        },
+        &mail_jmap::transport::TransportLimits::default(),
+    )
+    .expect("the page is read");
+    assert!(
+        page.messages.is_empty(),
+        "a message outside the requested mailbox is not disclosed: {:?}",
+        page.messages
+    );
+}
+
+#[test]
+fn a_transport_without_address_pinning_fails_closed() {
+    let transport = FixtureTransport::new()
+        .without_address_pinning()
+        .on_get("/jmap/session", serde_json::from_str(SESSION).unwrap());
+    let mut client = client(transport);
+    let error = client
+        .discover("https://api.example.com/jmap/session")
+        .expect_err("a transport that cannot pin the validated address is refused");
+    assert!(
+        matches!(error, JmapError::Rejected(_)),
+        "the pinning gate fails closed: {error:?}"
+    );
+}
+
+#[test]
+fn the_attachment_properties_are_requested() {
+    let (client, log) = discovered(transport());
+    let mut reader = JmapReader::new(client, "acct-personal");
+    let page = reader
+        .list(
+            &MailboxRef::new("INBOX"),
+            &ListQuery {
+                limit: 10,
+                cursor: None,
+            },
+        )
+        .expect("the page is read");
+
+    let bodies = bodies(&log);
+    let get = bodies
+        .iter()
+        .find(|body| body.contains("\"Email/get\""))
+        .expect("the upstream was asked for the messages");
+    assert!(
+        get.contains("\"attachments\""),
+        "the attachment properties are requested: {get}"
+    );
+    let attachment = &page.messages[0].attachments[0];
+    assert_eq!(attachment.id, "B-blob-1");
+    assert_eq!(attachment.filename.as_deref(), Some("invoice.txt"));
+    assert_eq!(attachment.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(attachment.size, 17);
+}
+
+#[test]
+fn get_rejects_message_outside_requested_mailbox() {
+    let transport = FixtureTransport::new()
+        .on_get("/jmap/session", serde_json::from_str(SESSION).unwrap())
+        .on_post_body(
+            "/jmap/api",
+            "\"Mailbox/get\"",
+            envelope(
+                "Mailbox/get",
+                "m0",
+                json!({"list": [{"id":"work-id", "name":"WORK"}]}),
+            ),
+        )
+        .on_post_body(
+            "/jmap/api",
+            "\"Email/get\"",
+            envelope(
+                "Email/get",
+                "m0",
+                json!({"list": [{"id":"m1", "mailboxIds":{"inbox-id":true}}]}),
+            ),
+        );
+    let mut client = connected(transport);
+    assert!(matches!(
+        mail_jmap::reader::get_message(
+            &mut client,
+            "acct-personal",
+            &MailboxRef::new("WORK"),
+            &MessageId::new("m1")
+        ),
+        Err(JmapError::NotFound)
+    ));
 }

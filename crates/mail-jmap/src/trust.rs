@@ -223,7 +223,9 @@ impl EgressPolicy {
         if !self.origins.iter().any(|origin| origin.matches(url)) {
             return Err(TrustError::HostNotAllowed { host });
         }
-        if let Ok(address) = host.parse::<IpAddr>()
+        let literal_host = host.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(address) = literal_host.parse::<IpAddr>()
+            && !is_public_address(&address)
             && !self.allows_private_networks()
         {
             return Err(TrustError::PrivateAddress {
@@ -240,7 +242,9 @@ impl EgressPolicy {
     /// trusted. Anything else is refused, because a redirect is the one
     /// place where a trusted origin can hand the client to an untrusted one.
     pub fn check_redirect(&self, from: &Url, to: &str) -> Result<Url, TrustError> {
-        let target = Url::parse(to).map_err(|error| TrustError::InvalidUrl(error.to_string()))?;
+        let target = from
+            .join(to)
+            .map_err(|error| TrustError::InvalidUrl(error.to_string()))?;
         let same_origin = self
             .origins
             .iter()
@@ -381,8 +385,15 @@ fn is_public_v6(address: &Ipv6Addr) -> bool {
     if let Some(mapped) = address.to_ipv4_mapped() {
         return is_public_v4(&mapped);
     }
+    // IPv4-compatible and NAT64 forms embed a destination that may bypass
+    // the intended IPv4 address checks. Only explicit mapped addresses above
+    // are normalized; other transition ranges are denied by the global rule.
     let segments = address.segments();
     if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+        return false;
+    }
+    // Only global unicast (2000::/3) is eligible for public egress.
+    if segments[0] & 0xe000 != 0x2000 {
         return false;
     }
     // Unique local addresses (fc00::/7).
@@ -391,6 +402,14 @@ fn is_public_v6(address: &Ipv6Addr) -> bool {
     }
     // Link-local addresses (fe80::/10).
     if segments[0] & 0xffc0 == 0xfe80 {
+        return false;
+    }
+    // 6to4 embeds an IPv4 destination and should not bypass IPv4 checks.
+    if segments[0] == 0x2002 {
+        return false;
+    }
+    // IETF protocol assignments (2001::/23), including Teredo and benchmarking.
+    if segments[0] == 0x2001 && segments[1] <= 0x01ff {
         return false;
     }
     // Documentation range (2001:db8::/32).
@@ -507,6 +526,15 @@ mod tests {
     }
 
     #[test]
+    fn relative_redirects_are_resolved_against_the_current_url() {
+        let from = Url::parse("https://api.example.com/jmap/session").unwrap();
+        let target = policy()
+            .check_redirect(&from, "../api/")
+            .expect("a relative same-origin redirect is accepted");
+        assert_eq!(target.as_str(), "https://api.example.com/api/");
+    }
+
+    #[test]
     fn private_addresses_are_recognised() {
         assert!(!is_public_address(&"127.0.0.1".parse().unwrap()));
         assert!(!is_public_address(&"10.0.0.1".parse().unwrap()));
@@ -516,6 +544,35 @@ mod tests {
         assert!(!is_public_address(&"fd00::1".parse().unwrap()));
         assert!(is_public_address(&"93.184.216.34".parse().unwrap()));
         assert!(is_public_address(&"2606:4700::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv6_addresses_outside_global_unicast_are_not_public() {
+        for address in ["2001::1", "2002::1", "64:ff9b::1", "::ffff:10.0.0.1"] {
+            assert!(
+                !is_public_address(&address.parse().unwrap()),
+                "{address} is not accepted as globally routable"
+            );
+        }
+        assert!(is_public_address(&"2606:4700::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_public_ipv6_literal_is_allowed_when_explicitly_trusted() {
+        let policy = EgressPolicy::new(vec![Origin::parse("https://[2606:4700::1]").unwrap()]);
+        assert!(policy.check("https://[2606:4700::1]/jmap").is_ok());
+    }
+
+    #[test]
+    fn a_private_ipv6_literal_is_refused() {
+        let policy = EgressPolicy::new(vec![Origin::parse("https://[fd00::1]").unwrap()]);
+        let error = policy
+            .check("https://[fd00::1]/jmap/session")
+            .expect_err("a unique-local IPv6 literal is refused");
+        assert!(
+            matches!(error, TrustError::PrivateAddress { .. }),
+            "a bracketed IPv6 literal is classified like any other: {error:?}"
+        );
     }
 
     #[test]

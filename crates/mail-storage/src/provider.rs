@@ -1,0 +1,141 @@
+//! The provider connection store: the data plane's own record of how it
+//! talks to a provider.
+//!
+//! ADR-0010 is explicit that this is **not** a provider-management
+//! registry. The operator's desired state is a Kubernetes CRD; this store
+//! holds the transactional facts of a running connection: which account a
+//! connection serves, which capabilities it has, whether it needs
+//! reauthorization, and the generation of its refresh credential.
+//!
+//! The refresh credential itself is not here. It is a secret, so it lives in
+//! the [`crate::secret`] custody boundary, and this store holds only the
+//! reference to it and the generation that says which one is current.
+//!
+//! The refresh rotation is single-owner: a worker claims the connection at
+//! a generation, and only a claim at the current generation may commit the
+//! new credential. Two replicas therefore cannot both refresh, and a crash
+//! leaves the connection marked as needing reauthorization rather than
+//! silently rotating twice.
+
+use crate::error::StorageResult;
+
+/// How healthy a connection is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    /// The connection works.
+    Active,
+    /// The connection works but something is wrong.
+    Degraded,
+    /// The credential must be reauthorized.
+    NeedsReauthorization,
+    /// The provider is disconnected.
+    Disconnected,
+}
+
+impl ConnectionStatus {
+    /// The name of the status.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConnectionStatus::Active => "active",
+            ConnectionStatus::Degraded => "degraded",
+            ConnectionStatus::NeedsReauthorization => "needsReauthorization",
+            ConnectionStatus::Disconnected => "disconnected",
+        }
+    }
+
+    /// Parse a status name.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(ConnectionStatus::Active),
+            "degraded" => Some(ConnectionStatus::Degraded),
+            "needsReauthorization" => Some(ConnectionStatus::NeedsReauthorization),
+            "disconnected" => Some(ConnectionStatus::Disconnected),
+            _ => None,
+        }
+    }
+}
+
+/// One provider connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderConnection {
+    /// The connection identifier.
+    pub connection_id: String,
+    /// The provider the connection serves.
+    pub provider: String,
+    /// The provider-side account the connection reaches.
+    pub account_ref: String,
+    /// The Corvi identity the connection serves.
+    pub identity: String,
+    /// The capabilities the connection offers.
+    pub capabilities: Vec<String>,
+    /// How healthy the connection is.
+    pub status: ConnectionStatus,
+    /// The generation of the connection's credential.
+    pub generation: u64,
+    /// When the connection last changed.
+    pub updated_at: u64,
+}
+
+/// The state of a connection's refresh credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshState {
+    /// The connection the credential belongs to.
+    pub connection_id: String,
+    /// The generation the credential belongs to.
+    pub generation: u64,
+    /// The reference to the credential in the secret store.
+    pub secret_ref: String,
+    /// When the credential expires.
+    pub expires_at: u64,
+    /// Whether the credential must be reauthorized.
+    pub needs_reauthorization: bool,
+}
+
+/// The provider connection store.
+pub trait ProviderConnectionStore {
+    /// Store a connection.
+    fn put_connection(&self, connection: &ProviderConnection) -> StorageResult<()>;
+    /// Look up a connection.
+    fn get_connection(&self, connection_id: &str) -> StorageResult<Option<ProviderConnection>>;
+    /// List the connections that serve one identity.
+    fn list_connections(&self, identity: &str) -> StorageResult<Vec<ProviderConnection>>;
+    /// Store the refresh state of a connection.
+    fn put_refresh_state(&self, state: &RefreshState) -> StorageResult<()>;
+    /// Look up the refresh state of a connection.
+    fn get_refresh_state(&self, connection_id: &str) -> StorageResult<Option<RefreshState>>;
+    /// Claim the right to refresh a connection.
+    ///
+    /// The claim succeeds only when the connection is at the expected
+    /// generation and no other owner holds the claim of that generation, so
+    /// a refresh happens once. A claim of an older generation is stale — the
+    /// credential moved on — and does not stop the owner of the current
+    /// generation from claiming.
+    fn claim_refresh(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+    ) -> StorageResult<bool>;
+    /// Commit a refreshed credential.
+    ///
+    /// The commit succeeds only when the supplied owner still holds the
+    /// claim of the generation being committed and the connection is still
+    /// at that generation. A worker that holds a claim of an older
+    /// generation is stale and cannot commit.
+    fn complete_refresh(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+        secret_ref: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StorageResult<bool>;
+    /// Mark a connection as needing reauthorization.
+    fn mark_needs_reauthorization(&self, connection_id: &str, now: u64) -> StorageResult<bool>;
+    /// Disconnect a connection.
+    ///
+    /// Disconnecting invalidates the credential, the cached content, the
+    /// sync state and the background jobs of that connection.
+    fn disconnect(&self, connection_id: &str, now: u64) -> StorageResult<bool>;
+}

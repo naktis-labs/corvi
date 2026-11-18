@@ -1,0 +1,69 @@
+# Corvi gateway example — credential snapshot
+#
+# The snapshot is the complete, versioned description of one gateway
+# deployment. It holds **references** to secret files, never secret values,
+# so this file can be read, diffed and logged without leaking anything.
+#
+# The listener must be a loopback address and `allow_loopback_plaintext`
+# must be true: the gateway does not terminate TLS. See ADR-0006, which is
+# not implemented.
+#
+# Before starting the gateway, create the secret file this snapshot names:
+#
+#   install -m 0600 /dev/null /tmp/corvi-demo-token
+#   printf '%s\n' 'replace-me' > /tmp/corvi-demo-token
+#
+# The secret file must be a regular file that only its owner may read.
+# A file that is readable by others, or that the process does not own, is
+# refused, and an unreadable secret denies access rather than granting it.
+
+generation: 1
+
+# The HTTP listener that serves the REST API and the MCP endpoint.
+listen: 127.0.0.1:8080
+
+# The optional SMTP AUTH submission listener. Remove this line to serve
+# HTTP and MCP only. It must also be a loopback address.
+smtp_listen: 127.0.0.1:2525
+
+allow_loopback_plaintext: true
+
+identities:
+  - id: personal
+    mailbox: INBOX
+    address: me@example.com
+    display_name: Me
+    # `verified` means the scope of the mailbox is proven by trusted
+    # provider metadata. A message without that evidence is not disclosed.
+    isolation: verified
+
+  - id: work
+    mailbox: WORK
+    address: me@work.example
+    display_name: Work
+    # `dedicated` means this identity owns a physical mailbox of its own.
+    isolation: dedicated
+
+credentials:
+  # The credential an agent presents. Its grants name the identities it may
+  # act on and the actions it may perform on each of them. Permissions never
+  # union across identities: this credential may read `personal` and may
+  # send as `work`, and that grants it neither send on `personal` nor read
+  # on `work`.
+  - id: agent
+    token:
+      secret: "file:///tmp/corvi-demo-token"
+    grants:
+      - identity: personal
+        actions:
+          - mail:identities:list
+          - mail:messages:list
+          - mail:messages:read
+          - mail:messages:search
+          - mail:attachments:read
+          - mail:messages:send
+          - mail:submissions:read
+      - identity: work
+        actions:
+          - mail:identities:list
+          - mail:messages:list

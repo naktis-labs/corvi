@@ -187,6 +187,13 @@ pub struct CredentialConfig {
 pub struct Snapshot {
     generation: u64,
     listen: SocketAddr,
+    /// The address the SMTP AUTH submission listener binds, if any.
+    ///
+    /// The listener is optional: a deployment that serves only HTTP and MCP
+    /// leaves it unset. It must be a loopback address for the same reason
+    /// the HTTP listener must be: the gateway does not terminate TLS.
+    #[serde(default)]
+    smtp_listen: Option<SocketAddr>,
     allow_loopback_plaintext: bool,
     identities: Vec<MailIdentity>,
     #[serde(default)]
@@ -260,9 +267,22 @@ impl ValidatedSnapshot {
         self.snapshot.listen
     }
 
+    /// The address the SMTP AUTH submission listener binds, if any.
+    pub fn smtp_listen(&self) -> Option<SocketAddr> {
+        self.snapshot.smtp_listen
+    }
+
     /// Look up a client credential by identifier.
     pub fn credential(&self, id: &str) -> Option<&Credential> {
         self.credentials.iter().find(|c| c.id == id)
+    }
+
+    /// Every configured client credential.
+    ///
+    /// A caller that presents a secret is matched against the credentials in
+    /// turn, so the gateway needs to see them all.
+    pub fn credentials(&self) -> &[Credential] {
+        &self.credentials
     }
 
     /// Look up one identity by identifier.
@@ -322,6 +342,13 @@ impl Snapshot {
             return Err(ValidationError::ZeroGeneration);
         }
         if !self.allow_loopback_plaintext || !self.listen.ip().is_loopback() {
+            return Err(ValidationError::InsecureListener);
+        }
+        if let Some(smtp) = self.smtp_listen
+            && !smtp.ip().is_loopback()
+        {
+            // The SMTP listener speaks plaintext, so it may only ever be
+            // reachable from the loopback interface.
             return Err(ValidationError::InsecureListener);
         }
         if self.identities.is_empty() {

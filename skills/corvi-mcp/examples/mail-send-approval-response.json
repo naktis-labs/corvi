@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "resultType": "input_required",
+    "inputRequests": {
+      "confirm_send": {
+        "method": "elicitation/create",
+        "params": {
+          "mode": "form",
+          "message": "Send from me@example.com to someone@example.org? Subject: Hello",
+          "requestedSchema": {
+            "type": "object",
+            "properties": {"approved": {"type": "boolean"}},
+            "required": ["approved"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "requestState": "eyJuIjoiVXVMVEVTVE9SX1NUVVRFLU9BVEVTVElFIiwiInAiOiJhZ2VudCIsImkiOiJwZXJzb25hbCIsInQiOiJtYWlsX3NlbmQiLCJoIjoiZGlnZXN0Iiwia2I6ImlkZW1wb3RlbmN5LWtleSIsImciOjF9.sig"
+  }
+}

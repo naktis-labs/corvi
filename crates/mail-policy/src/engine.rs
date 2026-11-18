@@ -14,6 +14,7 @@
 //!    policy's `on_indeterminate` decides, and the secure default is `hide`.
 
 use mail_core::{Class, NormalizedMessage};
+use serde::{Deserialize, Serialize};
 
 use crate::decision::{
     Decision, DefaultVisibility, OnIndeterminate, RedactableField, Redaction, Rendering, Visibility,
@@ -21,7 +22,10 @@ use crate::decision::{
 use crate::rule::{BooleanOp, Predicate, Rule, SubjectField, TextMatch, TextPredicate};
 
 /// A disclosure filter policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The policy is serializable so that a gateway can read it from its
+/// configuration and report the revision it applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterPolicy {
     /// The policy's identifier.
     pub id: String,
@@ -349,6 +353,7 @@ pub fn apply_redactions(message: &NormalizedMessage, decision: &Decision) -> Red
         from: message.from.clone(),
         to: message.to.clone(),
         cc: message.cc.clone(),
+        reply_to: message.reply_to.clone(),
         subject: message.subject.clone(),
         text_body: message.text_body.clone(),
         html_body: message.html_body.clone(),
@@ -404,6 +409,8 @@ pub struct RedactedMessage {
     pub to: Vec<mail_core::Address>,
     /// The carbon-copy recipients.
     pub cc: Vec<mail_core::Address>,
+    /// The reply-to addresses.
+    pub reply_to: Vec<mail_core::Address>,
     /// The subject, possibly redacted.
     pub subject: Option<String>,
     /// The plain-text body, possibly redacted.
@@ -428,6 +435,7 @@ fn apply_one(projected: &mut RedactedMessage, redaction: &Redaction) {
             RedactableField::RecipientAddress => {
                 projected.to.clear();
                 projected.cc.clear();
+                projected.reply_to.clear();
             }
             RedactableField::LinkTarget => {
                 for link in &mut projected.links {
@@ -473,7 +481,12 @@ fn apply_one(projected: &mut RedactedMessage, redaction: &Redaction) {
             }
         }
         RedactableField::RecipientAddress => {
-            for address in projected.to.iter_mut().chain(projected.cc.iter_mut()) {
+            for address in projected
+                .to
+                .iter_mut()
+                .chain(projected.cc.iter_mut())
+                .chain(projected.reply_to.iter_mut())
+            {
                 address.address = regex
                     .replace_all(&address.address, redaction.replacement.as_str())
                     .into_owned();

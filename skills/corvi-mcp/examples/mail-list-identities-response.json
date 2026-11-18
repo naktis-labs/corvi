@@ -1,0 +1,34 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"items\":[{\"id\":\"personal\",\"address\":\"me@example.com\",\"displayName\":\"Me\",\"permissions\":[\"mail:identities:list\",\"mail:messages:list\",\"mail:messages:read\",\"mail:messages:search\"]},{\"id\":\"work\",\"address\":\"me@work.example\",\"permissions\":[\"mail:identities:list\",\"mail:messages:send\"]}]}"
+      }
+    ],
+    "structuredContent": {
+      "items": [
+        {
+          "id": "personal",
+          "address": "me@example.com",
+          "displayName": "Me",
+          "permissions": [
+            "mail:identities:list",
+            "mail:messages:list",
+            "mail:messages:read",
+            "mail:messages:search"
+          ]
+        },
+        {
+          "id": "work",
+          "address": "me@work.example",
+          "permissions": ["mail:identities:list", "mail:messages:send"]
+        }
+      ]
+    },
+    "isError": false
+  }
+}

@@ -1,0 +1,10 @@
+# Invalid: the gatewayRef names a gateway that does not exist. There is no
+# default gateway and no fallback to another one.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: missing-gateway

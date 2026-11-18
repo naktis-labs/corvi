@@ -1,0 +1,65 @@
+# The operator's own identity, and the gateway's. They are deliberately
+# different: only the operator carries a Kubernetes API token, and the gateway
+# carries no RBAC role at all (ADR-0011 3). No cluster in this repository
+# applies these objects.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: corvi-operator
+  namespace: corvi-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: corvi-gateway
+  namespace: corvi-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: corvi-operator
+  namespace: corvi-system
+rules:
+  - apiGroups: ["corvi.naktis.eu"]
+    resources:
+      [
+        "corvigateways",
+        "mailproviders",
+        "mailboxes",
+        "mailidentities",
+      ]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["corvi.naktis.eu"]
+    resources:
+      [
+        "corvigateways/status",
+        "mailproviders/status",
+        "mailidentities/status",
+      ]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["corvi.naktis.eu"]
+    resources: ["corvigateways/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: corvi-operator
+  namespace: corvi-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: corvi-operator
+subjects:
+  - kind: ServiceAccount
+    name: corvi-operator
+    namespace: corvi-system

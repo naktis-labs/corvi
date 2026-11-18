@@ -1,0 +1,18 @@
+[package]
+name = "mail-operator"
+description = "Ownership, reference resolution and hardened workload rendering for Corvi's Kubernetes operator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mail-config = { path = "../mail-config" }
+mail-core = { path = "../mail-core" }
+serde = { workspace = true }
+serde_yaml = "0.9"
+
+[lints]
+workspace = true

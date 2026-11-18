@@ -1,0 +1,7 @@
+# Invalid: Mailbox.spec.providerRef is required and is never defaulted.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: orphan
+  namespace: corvi-system
+spec: {}

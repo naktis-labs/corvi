@@ -1,0 +1,64 @@
+# Corvi operator API fixtures
+
+These are **design fixtures**, not installable manifests. The Corvi Kubernetes
+operator, its CRDs, its admission webhook and its network policy are **not
+implemented**: there is no cluster in this repository and no Kubernetes client
+in this crate. Nothing here talks to an API server, and no controller is
+claimed to run.
+
+What exists:
+
+* `crates/mail-operator` — the decision logic: reference resolution
+  (ADR-0013), ownership, suspension, reparenting and cascade-delete guards
+  (ADR-0012/ADR-0013), the hardened workload profile (ADR-0011) and
+  last-known-good snapshot retention.
+* `crates/mail-operator/tests/fixtures.rs` — parses and validates the files in
+  this directory.
+* `deploy/operator/` — the workload shapes the renderer would submit, plus the
+  independently installed policy fixture.
+
+What does **not** exist: a structural CRD manifest with OpenAPI v3 and CEL
+invariants, a reconciler loop, an admission webhook server, a network policy
+controller or any Kubernetes RBAC enforcement. ADR-0012 §4 item 1 (the
+structural CRD) and the deployment hardening gates remain future work, and the
+enforcement boundary for a deployed cluster is an independently installed
+admission policy and network policy — not this crate.
+
+## Fixtures
+
+Valid CRD-shaped instances:
+
+| File | What it shows |
+| --- | --- |
+| `gateway-primary.yaml` | A `CorviGateway` with ephemeral state, one replica. |
+| `gateway-sqlite.yaml` | A single-writer SQLite `CorviGateway` (one replica, pre-created claim). |
+| `provider-chain.yaml` | The ADR-0013 chain: gateway ← provider ← mailbox ← identity, including an unbound provider. |
+
+Invalid instances, each of which the operator rejects:
+
+| File | Rejected because |
+| --- | --- |
+| `invalid-dangling-gateway-ref.yaml` | `gatewayRef` names a gateway that does not exist. |
+| `invalid-missing-provider-ref.yaml` | `Mailbox.spec.providerRef` is required. |
+| `invalid-missing-mailbox-ref.yaml` | `MailIdentity.spec.mailboxRef` is required. |
+| `invalid-cross-namespace-ref.yaml` | A reference may not leave its namespace. |
+| `invalid-management-only-mailbox.yaml` | A provider that administers other providers and serves no mailbox of its own may not own a mailbox. |
+| `invalid-suspended-provider.yaml` | A suspended provider invalidates its dependents. |
+| `invalid-podspec-injection.yaml` | A PodSpec fragment in a `CorviGateway` is refused. |
+| `invalid-owner-reference-injection.yaml` | User-supplied `ownerReferences` are refused. |
+| `invalid-sqlite-two-replicas.yaml` | SQLite has one writer; more than one replica is refused. |
+| `invalid-ephemeral-embedded-issuer.yaml` | An embedded OAuth issuer needs durable state. |
+
+## One reinterpretation
+
+The task brief describes a *management-only provider* as one that
+"administers other providers and serves no mailbox itself" and forbids it from
+owning mailboxes. ADR-0013 uses "management-only" for a different thing: a
+provider with **no `gatewayRef`**, which still owns mailboxes that are simply
+not served by any gateway.
+
+Both are modelled. A provider with no `gatewayRef` is *unbound* (valid, owns
+mailboxes, contributes no identities to any gateway). A provider with
+`spec.role: managementOnly` is the brief's management-only provider: it may
+own no mailbox and may not be bound to a gateway. The reference contract of
+`api/mail-resource-ownership.schema.json` is otherwise unchanged.

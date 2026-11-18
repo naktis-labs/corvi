@@ -1,0 +1,10 @@
+# Invalid: a reference may not leave its namespace.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: primary
+    namespace: other-namespace

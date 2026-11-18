@@ -9,6 +9,7 @@ members = [
     "crates/mail-config",
     "crates/mail-imap",
     "crates/mail-jmap",
+    "crates/mail-operator",
     "crates/mail-policy",
     "crates/mail-policy-engine",
     "crates/mail-smtp",

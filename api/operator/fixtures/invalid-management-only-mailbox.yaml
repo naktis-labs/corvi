@@ -1,0 +1,20 @@
+# Invalid: a provider that administers other providers and serves no mailbox
+# of its own (spec.role: managementOnly) may not own a mailbox.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: administration
+  namespace: corvi-system
+spec:
+  role: managementOnly
+  gatewayRef:
+    name: primary
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: personal
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: administration

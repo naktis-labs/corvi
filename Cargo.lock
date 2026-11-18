@@ -616,6 +616,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-operator"
+version = "0.1.0"
+dependencies = [
+ "mail-config",
+ "mail-core",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "mail-policy"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,16 @@
+# Invalid: the security profile is chosen by the operator, never requested by
+# the resource. A PodSpec fragment in a CorviGateway is refused.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: primary
+  namespace: corvi-system
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: backdoor
+          image: ghcr.io/naktis-labs/corvi-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          securityContext:
+            privileged: true

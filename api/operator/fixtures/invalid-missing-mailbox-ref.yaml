@@ -1,0 +1,9 @@
+# Invalid: MailIdentity.spec.mailboxRef is required and is never defaulted.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: nobody
+  namespace: corvi-system
+spec:
+  address: nobody@example.com
+  isolation: dedicated

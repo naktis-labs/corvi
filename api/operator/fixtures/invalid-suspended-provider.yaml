@@ -1,0 +1,19 @@
+# Invalid: a suspended provider invalidates its mailboxes and identities.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+spec:
+  suspended: true
+  gatewayRef:
+    name: primary
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: personal
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: fastmail

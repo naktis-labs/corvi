@@ -29,7 +29,7 @@ use crate::approval::{ApprovalGrant, ApprovalRequest, ApprovalStore};
 use crate::cursor::{CursorScope, CursorStore, digest};
 use crate::policy::PolicyStore;
 use crate::problem::Problem;
-use crate::submission::{SubmissionRecord, SubmissionStore};
+use crate::submission::{Reservation, SubmissionRecord, SubmissionStore};
 use crate::upstream::{Upstream, UpstreamError};
 use crate::view::{
     AttachmentDescriptor, IdentitiesResponse, IdentityView, MailAddress, MailMessage, MessagePage,
@@ -502,9 +502,13 @@ impl Gateway {
         let identity = self.authorize(caller, &request.identity, Action::Send)?;
         validate_send(request)?;
         let recipients = envelope_recipients(request);
-        let payload_digest = digest(&canonical_payload(&identity, request, &recipients));
+        let payload_digest = digest(&canonical_payload(&identity, request));
         let now = self.inner.clock.now();
 
+        // A replay returns the submission the key already produced. The
+        // check comes before the approval is verified: the approval that
+        // produced the submission has been spent, so verifying it again
+        // would refuse a replay of a send that already happened.
         if let Some(record) = self.inner.submissions.idempotency_record(
             caller.credential_id(),
             identity.id.as_str(),
@@ -547,23 +551,30 @@ impl Gateway {
             }
         }
 
-        let submission_id = crate::time::random_id();
-        self.inner.submissions.record_idempotency(
+        let reservation = self.inner.submissions.reserve(
             caller.credential_id(),
             identity.id.as_str(),
             &request.idempotency_key,
             &payload_digest,
-            &submission_id,
-        );
-        self.inner.submissions.insert(SubmissionRecord {
-            id: submission_id.clone(),
-            principal: caller.credential_id().to_owned(),
-            identity: identity.id.as_str().to_owned(),
-            status: SubmissionStatus::Queued,
-            created_at: now,
-            updated_at: now,
-            failure_code: None,
-        });
+            SubmissionRecord {
+                id: crate::time::random_id(),
+                principal: caller.credential_id().to_owned(),
+                identity: identity.id.as_str().to_owned(),
+                status: SubmissionStatus::Queued,
+                created_at: now,
+                updated_at: now,
+                failure_code: None,
+            },
+        )?;
+        let submission_id = match reservation {
+            Reservation::Existing(record) => {
+                return Ok(SendOutcome::Submitted {
+                    submission: record.to_view(),
+                    replayed: true,
+                });
+            }
+            Reservation::Created(id) => id,
+        };
 
         let outgoing = OutgoingMessage {
             sender: identity.address.clone(),
@@ -596,6 +607,19 @@ impl Gateway {
         self.inner
             .submissions
             .update_status(&submission_id, status, failure_code.clone(), now);
+        if status == SubmissionStatus::Failed {
+            // The upstream definitely refused the message, so nothing was
+            // delivered. The claim is released and the caller may retry with
+            // the same key. An ambiguous outcome keeps the claim: the
+            // message may have been delivered, and a retry could duplicate
+            // it.
+            self.inner.submissions.release(
+                caller.credential_id(),
+                identity.id.as_str(),
+                &request.idempotency_key,
+                &payload_digest,
+            );
+        }
         let record = self
             .inner
             .submissions
@@ -908,20 +932,37 @@ fn envelope_recipients(request: &SendRequest) -> Vec<String> {
 }
 
 /// The canonical payload an idempotency key is bound to.
-fn canonical_payload(
-    identity: &MailIdentity,
-    request: &SendRequest,
-    recipients: &[String],
-) -> String {
+///
+/// The encoding is unambiguous: every value is length-prefixed, so no two
+/// different requests can produce the same string. Joining addresses with a
+/// separator would not do that: `{to: [a], cc: [b]}` and `{to: [a, b]}`
+/// describe different envelopes and must not share a digest, or a replay
+/// under the same key would silently send to a different set of recipients.
+fn canonical_payload(identity: &MailIdentity, request: &SendRequest) -> String {
     let mut payload = String::new();
-    payload.push_str(identity.id.as_str());
-    payload.push('\u{1e}');
-    payload.push_str(&request.subject);
-    payload.push('\u{1e}');
-    payload.push_str(&request.text_body);
-    payload.push('\u{1e}');
-    payload.push_str(&recipients.join(","));
+    push_canonical_field(&mut payload, identity.id.as_str());
+    push_canonical_field(&mut payload, &request.subject);
+    push_canonical_field(&mut payload, &request.text_body);
+    for (role, addresses) in [
+        ("to", &request.to),
+        ("cc", &request.cc),
+        ("bcc", &request.bcc),
+    ] {
+        push_canonical_field(&mut payload, role);
+        push_canonical_field(&mut payload, &addresses.len().to_string());
+        for address in addresses {
+            push_canonical_field(&mut payload, address.email.as_str());
+        }
+    }
     payload
+}
+
+/// Append one length-prefixed field to the canonical payload.
+fn push_canonical_field(payload: &mut String, value: &str) {
+    payload.push_str(&value.len().to_string());
+    payload.push(':');
+    payload.push_str(value);
+    payload.push('\u{1e}');
 }
 
 /// The message the user is asked to approve.

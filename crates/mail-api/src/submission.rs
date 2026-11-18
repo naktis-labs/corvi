@@ -76,10 +76,33 @@ struct State {
     idempotency: HashMap<String, IdempotencyRecord>,
 }
 
+/// The result of atomically claiming an idempotency key and submission slot.
+#[derive(Debug)]
+pub enum Reservation {
+    /// The key already belongs to a matching send.
+    Existing(SubmissionRecord),
+    /// This call created the in-memory submission record.
+    Created(String),
+}
+
 impl SubmissionStore {
     /// Create an empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Take the store's lock.
+    ///
+    /// A poisoned lock is recovered rather than ignored: every mutation in
+    /// this store is a single map update, and `reserve` orders its two
+    /// writes so that an interrupted reservation fails closed instead of
+    /// leaving a submission without a claim. Ignoring the poison instead
+    /// would silently drop writes, and refusing everything would turn one
+    /// panicking thread into a permanently dead gateway.
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Look up the replay record of an idempotency key.
@@ -89,46 +112,82 @@ impl SubmissionStore {
         identity: &str,
         key: &str,
     ) -> Option<IdempotencyRecord> {
-        let state = self.state.lock().ok()?;
+        let state = self.lock();
         state
             .idempotency
             .get(&idempotency_key(principal, identity, key))
             .cloned()
     }
 
-    /// Record that an idempotency key produced a submission.
-    pub fn record_idempotency(
+    /// Atomically find an existing idempotency claim or reserve a submission.
+    pub fn reserve(
         &self,
         principal: &str,
         identity: &str,
         key: &str,
         payload_digest: &str,
-        submission_id: &str,
-    ) {
-        if let Ok(mut state) = self.state.lock() {
-            state.idempotency.insert(
-                idempotency_key(principal, identity, key),
-                IdempotencyRecord {
-                    key: key.to_owned(),
-                    principal: principal.to_owned(),
-                    identity: identity.to_owned(),
-                    payload_digest: payload_digest.to_owned(),
-                    submission_id: submission_id.to_owned(),
-                },
-            );
+        record: SubmissionRecord,
+    ) -> Result<Reservation, crate::problem::Problem> {
+        let mut state = self.lock();
+        let supplied_key = key.to_owned();
+        let key = idempotency_key(principal, identity, key);
+        if let Some(existing) = state.idempotency.get(&key) {
+            if existing.payload_digest != payload_digest {
+                return Err(crate::problem::Problem::idempotency_conflict());
+            }
+            let submission = state
+                .submissions
+                .get(&existing.submission_id)
+                .cloned()
+                .ok_or_else(crate::problem::Problem::internal)?;
+            return Ok(Reservation::Existing(submission));
         }
+        let id = record.id.clone();
+        // The claim is written before the submission it names. If the
+        // process dies between the two writes, the claim points at a
+        // submission that does not exist, and the next reservation for this
+        // key fails closed instead of creating a second submission. The
+        // other order would leave an unclaimed submission, which the next
+        // reservation would duplicate.
+        state.idempotency.insert(
+            key,
+            IdempotencyRecord {
+                key: supplied_key,
+                principal: principal.to_owned(),
+                identity: identity.to_owned(),
+                payload_digest: payload_digest.to_owned(),
+                submission_id: id.clone(),
+            },
+        );
+        state.submissions.insert(id.clone(), record);
+        Ok(Reservation::Created(id))
     }
 
-    /// Store a submission.
-    pub fn insert(&self, record: SubmissionRecord) {
-        if let Ok(mut state) = self.state.lock() {
-            state.submissions.insert(record.id.clone(), record);
+    /// Release an idempotency claim after a definite failure.
+    ///
+    /// A claim is released only when the message was definitely not
+    /// delivered, so that the caller may retry with the same key. An
+    /// ambiguous outcome keeps the claim: the message may have reached the
+    /// upstream, and a retry could deliver it twice.
+    ///
+    /// The claim is only released when it still carries the digest of the
+    /// payload that failed, so a claim that a later attempt already reused
+    /// is never withdrawn.
+    pub fn release(&self, principal: &str, identity: &str, key: &str, payload_digest: &str) {
+        let mut state = self.lock();
+        let composite = idempotency_key(principal, identity, key);
+        let Some(existing) = state.idempotency.get(&composite) else {
+            return;
+        };
+        if existing.payload_digest != payload_digest {
+            return;
         }
+        state.idempotency.remove(&composite);
     }
 
     /// Look up a submission.
     pub fn get(&self, id: &str) -> Option<SubmissionRecord> {
-        let state = self.state.lock().ok()?;
+        let state = self.lock();
         state.submissions.get(id).cloned()
     }
 
@@ -140,12 +199,11 @@ impl SubmissionStore {
         failure_code: Option<String>,
         now: u64,
     ) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(record) = state.submissions.get_mut(id) {
-                record.status = status;
-                record.failure_code = failure_code;
-                record.updated_at = now;
-            }
+        let mut state = self.lock();
+        if let Some(record) = state.submissions.get_mut(id) {
+            record.status = status;
+            record.failure_code = failure_code;
+            record.updated_at = now;
         }
     }
 }

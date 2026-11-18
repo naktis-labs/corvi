@@ -259,6 +259,298 @@ fn send_message_submits_from_the_authorized_identity() {
 }
 
 #[test]
+fn concurrent_identical_sends_reserve_one_submission_and_conflicts_are_rejected() {
+    let env = environment("send-race", ALL_ACTIONS);
+    let caller = env.caller();
+    let request = SendRequest {
+        identity: personal(),
+        to: vec![recipient("someone@example.org")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Hello".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "shared-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+
+    let gateway = env.gateway.clone();
+    let caller1 = caller.clone();
+    let request1 = request.clone();
+    let first = std::thread::spawn(move || gateway.send_message(&caller1, &request1));
+    let gateway = env.gateway.clone();
+    let second = std::thread::spawn(move || gateway.send_message(&caller, &request));
+
+    first
+        .join()
+        .expect("first request completes")
+        .expect("send succeeds");
+    second
+        .join()
+        .expect("second request completes")
+        .expect("replay succeeds");
+    assert_eq!(env.upstream.submissions().len(), 1);
+
+    let conflict = SendRequest {
+        identity: personal(),
+        to: vec![recipient("someone@example.org")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Different payload".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "shared-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+    assert_eq!(
+        env.gateway
+            .send_message(&env.caller(), &conflict)
+            .unwrap_err()
+            .code,
+        mail_api::problem::ErrorCode::IdempotencyConflict.as_str()
+    );
+}
+
+/// The race between two identical sends must be caught every time.
+///
+/// A single pair of threads proves little: the old implementation
+/// separated the idempotency lookup, the claim and the submission insert
+/// into three lock acquisitions, and two threads would often not overlap
+/// inside that window. This test starts both threads on a barrier, runs
+/// many rounds with a fresh key each round, and requires that every round
+/// produced exactly one upstream delivery and that the loser of the race
+/// replayed the winner's submission rather than sending a second message.
+#[test]
+fn two_racing_identical_sends_never_deliver_the_message_twice() {
+    const ROUNDS: usize = 50;
+
+    let env = environment("send-race-barrrier", ALL_ACTIONS);
+    let caller = env.caller();
+
+    for round in 0..ROUNDS {
+        let key = format!("race-{round}");
+        let request = SendRequest {
+            identity: personal(),
+            to: vec![recipient("someone@example.org")],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Hello".to_owned(),
+            text_body: "A body.".to_owned(),
+            idempotency_key: key.clone(),
+            approval_required: false,
+            approval: None,
+        };
+
+        let before = env.upstream.submissions().len();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let gateway = env.gateway.clone();
+            let caller = caller.clone();
+            let request = request.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                gateway.send_message(&caller, &request)
+            }));
+        }
+
+        let mut outcomes = Vec::new();
+        for handle in handles {
+            let outcome = handle
+                .join()
+                .expect("the request completes")
+                .expect("the send succeeds");
+            let SendOutcome::Submitted {
+                submission,
+                replayed,
+            } = outcome
+            else {
+                panic!("the send was not submitted");
+            };
+            outcomes.push((submission.id, replayed));
+        }
+
+        assert_eq!(
+            env.upstream.submissions().len(),
+            before + 1,
+            "round {round} delivered the message more than once"
+        );
+        let (first, second) = (&outcomes[0], &outcomes[1]);
+        assert_eq!(
+            first.0, second.0,
+            "round {round} produced two different submissions"
+        );
+        assert!(
+            first.1 != second.1,
+            "round {round} sent the message twice instead of replaying it"
+        );
+    }
+}
+
+/// The recipient roles are part of what an idempotency key binds to.
+///
+/// `{to: [a], cc: [b]}` and `{to: [a, b]}` describe different envelopes.
+/// If they shared a digest, the second request would replay the first
+/// submission and the message would go to the wrong recipients.
+#[test]
+fn the_recipient_roles_are_part_of_the_idempotency_digest() {
+    let env = environment("send-digest-roles", ALL_ACTIONS);
+    let caller = env.caller();
+
+    let first = SendRequest {
+        identity: personal(),
+        to: vec![recipient("someone@example.org")],
+        cc: vec![recipient("other@example.org")],
+        bcc: Vec::new(),
+        subject: "Hello".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "role-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+    env.gateway
+        .send_message(&caller, &first)
+        .expect("the first send succeeds");
+
+    let second = SendRequest {
+        identity: personal(),
+        to: vec![
+            recipient("someone@example.org"),
+            recipient("other@example.org"),
+        ],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Hello".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "role-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+    assert_eq!(
+        env.gateway.send_message(&caller, &second).unwrap_err().code,
+        mail_api::problem::ErrorCode::IdempotencyConflict.as_str(),
+        "a different envelope must not replay the first send"
+    );
+    assert_eq!(env.upstream.submissions().len(), 1);
+}
+
+/// A send the upstream definitely refused releases the key.
+///
+/// Nothing was delivered, so the caller may retry with the same key. If the
+/// key stayed claimed, a transient upstream failure would burn the key
+/// forever.
+#[test]
+fn a_definitely_refused_send_releases_the_idempotency_key() {
+    let env = environment("send-reject-release", ALL_ACTIONS);
+    let caller = env.caller();
+    env.upstream
+        .set_behavior(mail_api::fixture::SubmissionBehavior::Reject);
+
+    let request = SendRequest {
+        identity: personal(),
+        to: vec![recipient("someone@example.org")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Hello".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "retry-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+
+    let outcome = env
+        .gateway
+        .send_message(&caller, &request)
+        .expect("the refusal is reported, not raised");
+    let SendOutcome::Submitted { submission, .. } = outcome else {
+        panic!("the send was not submitted");
+    };
+    assert_eq!(submission.status, mail_api::view::SubmissionStatus::Failed);
+
+    env.upstream
+        .set_behavior(mail_api::fixture::SubmissionBehavior::Accept);
+    let outcome = env
+        .gateway
+        .send_message(&caller, &request)
+        .expect("the retry succeeds");
+    let SendOutcome::Submitted {
+        submission,
+        replayed,
+    } = outcome
+    else {
+        panic!("the retry was not submitted");
+    };
+    assert!(!replayed, "the retry was replayed instead of sent");
+    assert_eq!(
+        submission.status,
+        mail_api::view::SubmissionStatus::Submitted
+    );
+    // Both attempts reached the upstream: the fixture records every message
+    // it was handed, whether it accepted or refused it.
+    assert_eq!(env.upstream.submissions().len(), 2);
+}
+
+/// A send whose outcome is unknown keeps the key claimed.
+///
+/// The message may have reached the upstream. Retrying it under the same key
+/// could deliver it twice, so the key stays claimed and the caller is told
+/// the outcome is unknown.
+#[test]
+fn an_ambiguous_send_keeps_the_idempotency_key_claimed() {
+    let env = environment("send-ambiguous-claim", ALL_ACTIONS);
+    let caller = env.caller();
+    env.upstream
+        .set_behavior(mail_api::fixture::SubmissionBehavior::Ambiguous);
+
+    let request = SendRequest {
+        identity: personal(),
+        to: vec![recipient("someone@example.org")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Hello".to_owned(),
+        text_body: "A body.".to_owned(),
+        idempotency_key: "ambiguous-key".to_owned(),
+        approval_required: false,
+        approval: None,
+    };
+
+    let outcome = env
+        .gateway
+        .send_message(&caller, &request)
+        .expect("the ambiguity is reported, not raised");
+    let SendOutcome::Submitted { submission, .. } = outcome else {
+        panic!("the send was not submitted");
+    };
+    assert_eq!(submission.status, mail_api::view::SubmissionStatus::Unknown);
+
+    env.upstream
+        .set_behavior(mail_api::fixture::SubmissionBehavior::Accept);
+    let outcome = env
+        .gateway
+        .send_message(&caller, &request)
+        .expect("the retry is answered from the claim");
+    let SendOutcome::Submitted {
+        submission,
+        replayed,
+    } = outcome
+    else {
+        panic!("the retry was not submitted");
+    };
+    assert!(
+        replayed,
+        "an ambiguous send was retried instead of replayed"
+    );
+    assert_eq!(submission.status, mail_api::view::SubmissionStatus::Unknown);
+    assert_eq!(
+        env.upstream.submissions().len(),
+        1,
+        "the ambiguous message was delivered a second time"
+    );
+}
+
+#[test]
 fn get_submission_returns_the_callers_own_submission() {
     let env = environment("submission", ALL_ACTIONS);
     let caller = env.caller();

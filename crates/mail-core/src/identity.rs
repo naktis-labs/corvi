@@ -68,7 +68,7 @@ impl FromStr for IdentityId {
 /// much evidence Corvi has, and `verified` fails closed when that evidence
 /// is missing rather than silently degrading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum IsolationMode {
     /// Scope is proven by trusted provider envelope-recipient metadata or
     /// server-side routing. Without that evidence the message is not visible.
@@ -191,5 +191,29 @@ mod tests {
         assert!(IdentityId::from_str("").is_err());
         assert!(IdentityId::from_str("has space").is_err());
         assert!(IdentityId::from_str("has\nnewline").is_err());
+    }
+
+    /// The wire spelling of the isolation modes is part of the configuration
+    /// contract: the operator's CRD fixtures and the documentation both use
+    /// `best_effort`, and a mode that cannot be read back is a mode that
+    /// silently fails closed.
+    #[test]
+    fn the_isolation_modes_have_a_stable_wire_spelling() {
+        for (mode, wire) in [
+            (IsolationMode::Verified, "\"verified\""),
+            (IsolationMode::Dedicated, "\"dedicated\""),
+            (IsolationMode::BestEffort, "\"best_effort\""),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap(),
+                wire,
+                "the wire spelling of {mode:?} changed"
+            );
+            assert_eq!(
+                serde_json::from_str::<IsolationMode>(wire).unwrap(),
+                mode,
+                "the wire spelling of {mode:?} does not read back"
+            );
+        }
     }
 }

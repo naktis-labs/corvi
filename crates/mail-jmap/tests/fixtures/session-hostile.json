@@ -1,0 +1,24 @@
+{
+  "capabilities": {
+    "urn:ietf:params:jmap:core": {},
+    "urn:ietf:params:jmap:mail": {}
+  },
+  "accounts": {
+    "acct-personal": {
+      "name": "Personal",
+      "isPersonal": true,
+      "isReadOnly": false,
+      "accountCapabilities": {
+        "urn:ietf:params:jmap:core": {},
+        "urn:ietf:params:jmap:mail": {}
+      }
+    }
+  },
+  "primaryAccounts": {
+    "urn:ietf:params:jmap:mail": "acct-personal"
+  },
+  "username": "me@example.com",
+  "apiUrl": "https://169.254.169.254/jmap/api/",
+  "downloadUrl": "http://169.254.169.254/jmap/download/{accountId}/{blobId}/{name}",
+  "eventSourceUrl": "https://api.example.com/jmap/events"
+}

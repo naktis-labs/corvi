@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 mail-core = { path = "../mail-core" }
 mail-config = { path = "../mail-config" }
+mail-jmap = { path = "../mail-jmap" }
 mail-policy = { path = "../mail-policy" }
 serde = { workspace = true }
 serde_json = { workspace = true }

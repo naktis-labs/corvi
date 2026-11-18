@@ -1,0 +1,26 @@
+{
+  "accountId": "acct-personal",
+  "list": [
+    {
+      "id": "M-email-1",
+      "blobId": "B-blob-1",
+      "threadId": "T-thread-1",
+      "mailboxIds": {"mbx-inbox": true},
+      "from": [{"email": "sender@example.com", "name": "Sender"}],
+      "to": [{"email": "me@example.com"}],
+      "cc": [{"email": "team@example.com"}],
+      "replyTo": [{"email": "replies@example.com"}],
+      "subject": "Invoice 2026",
+      "receivedAt": "2026-01-02T10:00:00Z",
+      "keywords": {"$seen": true},
+      "bodyValues": {
+        "textBody": "Please pay the invoice of 42 euros.",
+        "htmlBody": "<p>Please pay the invoice of 42 euros.</p>"
+      },
+      "attachments": [
+        {"blobId": "B-blob-1", "name": "invoice.txt", "type": "text/plain", "size": 17, "isInline": false}
+      ]
+    }
+  ],
+  "notFound": []
+}

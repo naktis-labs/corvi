@@ -222,6 +222,13 @@ pub enum TransportError {
     TlsRejected(String),
     /// The upstream sent something the adapter could not parse.
     Protocol(String),
+    /// The request reached the upstream, but the outcome cannot be
+    /// determined.
+    ///
+    /// A submission that was issued and whose answer was lost is the
+    /// important case: retrying it can deliver the message twice, so an
+    /// adapter must report it rather than report a failure.
+    Ambiguous(String),
     /// The operation is not valid in the transport's current state.
     InvalidState(String),
     /// The upstream rejected the operation.
@@ -240,6 +247,9 @@ impl std::fmt::Display for TransportError {
             TransportError::Unauthorized => f.write_str("credential was rejected"),
             TransportError::TlsRejected(reason) => write!(f, "TLS was refused: {reason}"),
             TransportError::Protocol(reason) => write!(f, "protocol error: {reason}"),
+            TransportError::Ambiguous(reason) => {
+                write!(f, "the outcome of the operation is unknown: {reason}")
+            }
             TransportError::InvalidState(reason) => write!(f, "invalid state: {reason}"),
             TransportError::Rejected(reason) => write!(f, "rejected: {reason}"),
         }

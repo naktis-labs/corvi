@@ -1,0 +1,11 @@
+{
+  "accountId": "acct-personal",
+  "queryState": "state-1",
+  "canCalculateChanges": true,
+  "totalChanges": 2,
+  "newState": "state-2",
+  "hasMoreChanges": false,
+  "created": ["M-email-2"],
+  "updated": ["M-email-1"],
+  "destroyed": ["M-email-3"]
+}

@@ -69,6 +69,7 @@ ALLOWED = {
     "mail-config": {"mail-core", "serde", "serde_yaml"},
     "mail-imap": {"mail-core"},
     "mail-smtp": {"mail-core"},
+    "mail-jmap": {"mail-core", "serde", "serde_json", "url"},
 }
 
 # Manifest lines that document a deliberate waiver.

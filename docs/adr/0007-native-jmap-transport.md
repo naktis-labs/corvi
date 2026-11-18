@@ -144,6 +144,45 @@ Initial capability status values should differentiate `UnsupportedTransport`, `C
 
 **Required conformance cases:** one MCP credential accessing an IMAP identity and a Fastmail/JMAP identity with separate permissions; wrong accountId/Identity ID selection; missing submission scope; verified alias isolation without trusted provenance; hidden-message search/count/thread/attachment leak attempts; state invalidation and JMAP resync; cross-principal cache leakage; malicious Session-discovered blob/push URL; revoked upstream token; ambiguous EmailSubmission completion; duplicate idempotency key; no SMTP fallback on JMAP failure; intact standalone functionality without plugins/operator.
 
+## 9. Implementation status
+
+The client exists in [`crates/mail-jmap`](../../crates/mail-jmap), and the gateway
+adapter exists in
+[`crates/mail-api/src/jmap_upstream.rs`](../../crates/mail-api/src/jmap_upstream.rs).
+What is implemented:
+
+- Session discovery and validation: capabilities, accounts, primary accounts and
+  account capabilities, with the account selector checked against the
+  **authenticated** session.
+- The URL trust rules of section 3: `https` only, an origin allowlist, host
+  resolution checked against the private and metadata ranges, and redirects
+  confined to the origin the client already trusted.
+- `Mailbox/get`, `Email/query`, `Email/get`, bounded blob downloads and
+  `Email/queryChanges`, over `mail-core`'s `MailReader`, `BlobReader` and
+  `MailChangeTracker` interfaces.
+- `Identity/get`, `Email/set` and `EmailSubmission/set`, over `mail-core`'s
+  `MailSubmitter` interface, with the upstream sending identity selected by
+  address and an ambiguous outcome reported as unknown rather than retried.
+- The gateway adapter routes each identity to its JMAP account, keeps the
+  upstream identifiers private behind opaque Corvi identifiers, and passes the
+  identities it does not serve to another upstream.
+
+What is **not** implemented, and is therefore not claimed:
+
+- The HTTPS transport itself. The client speaks through a `HttpTransport`
+  seam, and this slice ships only the fixture transport: ADR-0015 keeps
+  HTTP-client dependencies out of the data plane, so a deployment that wants
+  a live JMAP upstream needs a transport implementation that satisfies that
+  boundary. **No live provider connection has been made, and no Fastmail
+  interoperability test has been run.**
+- Upstream OAuth and refresh rotation (ADR-0008), durable state and
+  checkpoints (ADR-0010), EventSource push, and MCP change notifications
+  driven by upstream changes. Hidden-only change suppression is therefore not
+  implemented either: the adapter reports upstream changes, and the gateway
+  pipeline that filters them does not yet consume them.
+- The upstream `Email/search` capability is deliberately unused: Corvi
+  searches the **permitted projection**, never the upstream index.
+
 ## References
 
 - [RFC 8620: JMAP core](https://www.rfc-editor.org/rfc/rfc8620)

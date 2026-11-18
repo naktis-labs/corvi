@@ -1,0 +1,8 @@
+{
+  "accountId": "acct-personal",
+  "list": [
+    {"id": "id-personal", "name": "Me", "email": "me@example.com", "replyTo": null, "isDefault": true},
+    {"id": "id-work", "name": "Work", "email": "me@work.example", "replyTo": null, "isDefault": false}
+  ],
+  "notFound": []
+}

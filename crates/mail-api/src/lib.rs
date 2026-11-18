@@ -25,6 +25,7 @@
 pub mod approval;
 pub mod cursor;
 pub mod fixture;
+pub mod jmap_upstream;
 pub mod mcp;
 pub mod policy;
 pub mod problem;

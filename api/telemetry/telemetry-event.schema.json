@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://naktis.eu/schemas/corvi/telemetry-event.schema.json",
+  "title": "Corvi telemetry event",
+  "description": "One bounded telemetry observation. Every value comes from a closed set: a metric family from an allowlist, a numeric or bucketed value and at most one value per allowlisted label key. No field can carry a private value, so this schema describes what an exporter may publish and nothing else.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "value", "labels"],
+  "properties": {
+    "name": {
+      "description": "The metric family.",
+      "enum": [
+        "corvi_gateway_requests_total",
+        "corvi_gateway_request_duration",
+        "corvi_authorization_denials_total",
+        "corvi_upstream_failures_total",
+        "corvi_upstream_duration",
+        "corvi_queue_depth",
+        "corvi_telemetry_collection_failures_total"
+      ]
+    },
+    "value": {
+      "description": "The observed value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count"],
+          "properties": {
+            "count": {
+              "description": "A counter increment.",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["duration"],
+          "properties": {
+            "duration": {
+              "description": "A latency bucket.",
+              "enum": [
+                "under_10_ms",
+                "under_100_ms",
+                "under_1_s",
+                "under_10_s",
+                "over_10_s"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["gauge"],
+          "properties": {
+            "gauge": {
+              "description": "A point-in-time observation.",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "labels": {
+      "description": "Bounded labels. Each key appears at most once and each value comes from a closed set, so the label cardinality of a metric family is fixed.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "description": "Whether the operation succeeded.",
+          "enum": ["success", "failure", "denied", "timeout"]
+        },
+        "protocol": {
+          "description": "The protocol the request arrived on.",
+          "enum": ["http", "mcp", "smtp", "imap", "jmap", "grpc", "internal"]
+        },
+        "direction": {
+          "description": "Which way the request travelled.",
+          "enum": ["inbound", "outbound", "internal"]
+        },
+        "component": {
+          "description": "Which part of the gateway was involved.",
+          "enum": [
+            "gateway",
+            "api",
+            "smtp",
+            "imap",
+            "jmap",
+            "policy",
+            "storage",
+            "telemetry"
+          ]
+        },
+        "failure": {
+          "description": "The bounded class of a failure. A failure is classified before it is recorded, so the upstream text is never published.",
+          "enum": [
+            "auth",
+            "timeout",
+            "upstream",
+            "policy",
+            "config",
+            "rate_limited",
+            "internal"
+          ]
+        }
+      }
+    }
+  }
+}

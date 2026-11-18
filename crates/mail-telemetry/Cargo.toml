@@ -1,0 +1,18 @@
+[package]
+name = "mail-telemetry"
+description = "Bounded, privacy-preserving telemetry model and collection seam for the Corvi data plane."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

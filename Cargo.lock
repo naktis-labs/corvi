@@ -656,6 +656,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-queue"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "mail-core",
+ "mail-policy",
+ "mail-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "mail-smtp"
 version = "0.1.0"
 dependencies = [
@@ -673,6 +686,14 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+]
+
+[[package]]
+name = "mail-telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,21 @@
+[package]
+name = "mail-queue"
+description = "Optional durable queue, tasks and filtered synchronization for Corvi."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex = { workspace = true }
+mail-core = { path = "../mail-core" }
+mail-policy = { path = "../mail-policy" }
+mail-storage = { path = "../mail-storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

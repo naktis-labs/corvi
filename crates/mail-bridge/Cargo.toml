@@ -1,0 +1,16 @@
+[package]
+name = "mail-bridge"
+description = "Local transport bridge lifecycle for Corvi: typed dependency descriptors, the administrator install policy and the mandatory rootless profile."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

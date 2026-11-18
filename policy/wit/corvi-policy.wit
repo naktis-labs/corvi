@@ -1,0 +1,97 @@
+// The Corvi policy ABI.
+//
+// A policy module is a pure function: it receives bounded, typed and
+// allowlisted input and returns a decision with typed obligations. It never
+// receives raw mail, never receives provider administrative secrets and never
+// returns a rewritten message body - Corvi owns parsing, redaction and
+// projection.
+//
+// The module is granted no host capability by default. A module that imports
+// a host function is rejected by the artifact validator unless the local
+// allowlist names that import; see
+// `crates/mail-policy-engine/src/oci/wasm.rs`.
+
+package corvi:policy@0.1.0;
+
+interface decisions {
+  // The effect of an evaluation.
+  enum effect {
+    allow,
+    deny,
+    indeterminate,
+  }
+
+  // The kinds of restriction a module may ask for.
+  enum obligation-kind {
+    hide-message,
+    redact-field,
+    deny-attachments,
+    sanitize-html,
+    remove-external-links,
+  }
+
+  // The fields a module may ask Corvi to redact.
+  enum redactable-field {
+    subject,
+    body-text,
+    body-html,
+    sender-address,
+    recipient-address,
+    link-target,
+    attachment-filename,
+  }
+
+  // One restriction.
+  record obligation {
+    kind: obligation-kind,
+
+    // The field to redact. It is set for `redact-field` and empty otherwise.
+    field: option<string>,
+  }
+
+  // One allowlisted attribute of the resource.
+  record attribute {
+    name: string,
+    value: string,
+  }
+
+  // The input of an evaluation.
+  record request {
+    // The authenticated principal. Corvi supplies it; a module never
+    // authenticates a caller itself.
+    principal: string,
+
+    // The requested action.
+    action: string,
+
+    // An opaque reference to the requested resource.
+    resource: string,
+
+    // The identity the request is made in.
+    identity: string,
+
+    // The bounded classifications of the resource.
+    classifications: list<string>,
+
+    // The explicitly allowlisted attributes of the resource.
+    attributes: list<attribute>,
+  }
+
+  // The result of an evaluation.
+  record response {
+    effect: effect,
+    obligations: list<obligation>,
+  }
+
+  // Decide one request.
+  //
+  // A module that cannot decide returns `indeterminate`, which Corvi treats
+  // as a denial. A module that returns an obligation Corvi does not know is
+  // an error, and Corvi treats it as a denial as well.
+  evaluate: func(input: request) -> response;
+}
+
+// The world of a Corvi policy module.
+world policy {
+  export decisions;
+}

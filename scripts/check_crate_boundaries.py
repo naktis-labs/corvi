@@ -10,7 +10,10 @@ has not been quietly widened.
 Three rules are enforced:
 
 1. Data-plane crates must not depend on Kubernetes, operator, provider
-   management, database or HTTP-client crates.
+   management, database or HTTP-client crates. The one deliberate exception
+   is `mail-storage`, which ADR-0010 requires to hold the data plane's
+   transactional state in SQLite; it waives `rusqlite` explicitly and is
+   the only crate in the workspace that may talk to a database.
 2. `mail-core` must not depend on anything but `serde` (and its own
    workspace path dependencies).
 3. `mail-policy` must not depend on anything but `mail-core`, `regex` and
@@ -38,10 +41,26 @@ DATA_PLANE = {
     "mail-smtp",
     "mail-jmap",
     "mail-api",
+    "mail-storage",
+    "mail-auth",
+    "mail-policy-engine",
+    "mail-queue",
+    "mail-telemetry",
+    "mail-upstream-oauth",
 }
 
 # Crates that belong to the control plane or provider management.
-CONTROL_PLANE = {"mail-operator", "mail-admin", "provider-migadu"}
+#
+# `mail-bridge` is here because installing a bridge is a privileged action
+# that administers software on the host, not a step in serving mail: the
+# data plane may not import it.
+CONTROL_PLANE = {
+    "mail-operator",
+    "mail-admin",
+    "mail-bridge",
+    "mail-credential",
+    "provider-migadu",
+}
 
 # Dependencies a data-plane crate may never take.
 FORBIDDEN_IN_DATA_PLANE = {
@@ -70,6 +89,50 @@ ALLOWED = {
     "mail-imap": {"mail-core"},
     "mail-smtp": {"mail-core"},
     "mail-jmap": {"mail-core", "serde", "serde_json", "url"},
+    "mail-storage": {
+        "hex",
+        "ring",
+        "rusqlite",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "sha2",
+    },
+    "mail-auth": {
+        "base64",
+        "getrandom",
+        "hmac",
+        "mail-core",
+        "mail-storage",
+        "serde",
+        "serde_json",
+        "sha2",
+        "url",
+    },
+    "mail-bridge": {"serde", "serde_json"},
+    "mail-credential": {"serde", "serde_yaml"},
+    "mail-operator": {"mail-config", "mail-core", "serde", "serde_yaml"},
+    "mail-policy-engine": {"serde", "serde_json", "sha2", "wasmparser"},
+    "mail-queue": {
+        "hex",
+        "mail-core",
+        "mail-policy",
+        "mail-storage",
+        "serde",
+        "serde_json",
+        "sha2",
+    },
+    "mail-telemetry": {"serde"},
+    "mail-upstream-oauth": {
+        "hex",
+        "mail-storage",
+        "ring",
+        "serde",
+        "serde_json",
+        "url",
+    },
+    "mail-admin": {"hex", "mail-config", "sha2"},
+    "provider-migadu": {"mail-admin"},
 }
 
 # Manifest lines that document a deliberate waiver.

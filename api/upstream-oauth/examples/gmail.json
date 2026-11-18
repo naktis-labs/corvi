@@ -1,0 +1,35 @@
+{
+  "apiVersion": "corvi.naktis.eu/v1alpha1",
+  "kind": "UpstreamOAuthProvider",
+  "providerId": "gmail",
+  "issuer": "https://accounts.google.com",
+  "client": {
+    "clientId": "gmail-example-client-id.apps.googleusercontent.com",
+    "type": "public",
+    "registration": "preRegistered",
+    "redirectUris": ["http://127.0.0.1:8400/oauth/upstream/callback/gmail"],
+    "pkce": "S256"
+  },
+  "endpoints": {
+    "authorization": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token": "https://oauth2.googleapis.com/token",
+    "deviceAuthorization": "https://oauth2.googleapis.com/device/code"
+  },
+  "flows": ["authorizationCodePkce", "deviceAuthorization"],
+  "scopes": {
+    "read": ["https://mail.google.com/"],
+    "send": ["https://mail.google.com/"]
+  },
+  "transportMechanisms": [
+    "imapOauthBearer",
+    "imapXoauth2",
+    "smtpOauthBearer",
+    "smtpXoauth2"
+  ],
+  "refresh": {
+    "supported": true,
+    "rotationExpected": true,
+    "strategy": "singleOwner"
+  },
+  "accountVerification": "imapAuthenticationProbe"
+}

@@ -10,6 +10,7 @@ members = [
     "crates/mail-policy",
     "crates/mail-smtp",
     "crates/mail-storage",
+    "crates/mail-upstream-oauth",
 ]
 
 [workspace.package]

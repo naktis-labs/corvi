@@ -623,6 +623,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-upstream-oauth"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "mail-storage",
+ "ring",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

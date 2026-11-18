@@ -1,0 +1,37 @@
+{
+  "apiVersion": "corvi.naktis.eu/v1alpha1",
+  "kind": "UpstreamOAuthProvider",
+  "providerId": "microsoft365",
+  "issuer": "https://login.microsoftonline.com/common/v2.0",
+  "client": {
+    "clientId": "microsoft365-example-client-id",
+    "type": "public",
+    "registration": "preRegistered",
+    "redirectUris": ["http://127.0.0.1:8400/oauth/upstream/callback/microsoft365"],
+    "pkce": "S256"
+  },
+  "endpoints": {
+    "authorization": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "deviceAuthorization": "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
+  },
+  "flows": ["authorizationCodePkce", "deviceAuthorization"],
+  "scopes": {
+    "read": ["https://outlook.office365.com/IMAP.AccessAsUser.All"],
+    "send": ["https://outlook.office365.com/SMTP.Send"],
+    "offline": ["offline_access"]
+  },
+  "transportMechanisms": [
+    "imapOauthBearer",
+    "smtpOauthBearer",
+    "imapXoauth2",
+    "smtpXoauth2"
+  ],
+  "refresh": {
+    "supported": true,
+    "offlineScope": "offline_access",
+    "rotationExpected": true,
+    "strategy": "coordinatedBroker"
+  },
+  "accountVerification": "imapAuthenticationProbe"
+}

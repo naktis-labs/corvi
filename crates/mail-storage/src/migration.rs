@@ -16,7 +16,7 @@ use rusqlite::Connection;
 use crate::error::{StorageError, StorageResult};
 
 /// The schema version this build understands.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// One migration.
 #[derive(Debug, Clone, Copy)]
@@ -221,6 +221,48 @@ CREATE TABLE revocation_state (
     watermark INTEGER NOT NULL
 );
 INSERT INTO revocation_state (id, watermark) VALUES (1, 0);
+"#,
+        },
+        Migration {
+            version: 4,
+            name: "onboarding-transactions",
+            sql: r#"
+-- One encrypted onboarding transaction per state, consumed at most once.
+-- The whole transaction (including its one-time marker) lives in one row,
+-- so consumption is a single conditional UPDATE.
+CREATE TABLE onboarding_transactions (
+    state          TEXT PRIMARY KEY,
+    envelope       BLOB NOT NULL,
+    consumed       INTEGER NOT NULL DEFAULT 0
+);
+"#,
+        },
+        Migration {
+            version: 5,
+            name: "one-time-use-guards",
+            sql: r#"
+-- Durable one-time-use identifiers: guards over this table consume an
+-- identifier with one conditional INSERT, so at most one caller is told
+-- the identifier was fresh, and the record survives a restart.
+CREATE TABLE one_time_use_guards (
+    identifier     TEXT PRIMARY KEY,
+    used_at        INTEGER NOT NULL
+);
+"#,
+        },
+        Migration {
+            version: 6,
+            name: "connection-deliveries",
+            sql: r#"
+-- The durable delivery record of one connection. At most one delivery
+-- claim exists per connection, and a completed delivery is permanent, so
+-- two deliveries of one connection cannot both write a secret.
+CREATE TABLE connection_deliveries (
+    connection_id  TEXT PRIMARY KEY,
+    owner          TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
 "#,
         },
     ]

@@ -96,6 +96,38 @@ impl ProviderConnectionStore for FlakyCommitStore {
     fn disconnect(&self, connection_id: &str, now: u64) -> StorageResult<bool> {
         self.inner.disconnect(connection_id, now)
     }
+
+    fn vouches_durability(&self) -> bool {
+        self.inner.vouches_durability()
+    }
+
+    fn claim_delivery(
+        &self,
+        connection_id: &str,
+        owner: &str,
+        now: u64,
+    ) -> StorageResult<mail_storage::DeliveryClaim> {
+        self.inner.claim_delivery(connection_id, owner, now)
+    }
+
+    fn complete_delivery(&self, connection_id: &str, owner: &str, now: u64) -> StorageResult<()> {
+        self.inner.complete_delivery(connection_id, owner, now)
+    }
+
+    fn release_delivery(&self, connection_id: &str, owner: &str) -> StorageResult<()> {
+        self.inner.release_delivery(connection_id, owner)
+    }
+
+    fn delivery_claim_state(
+        &self,
+        connection_id: &str,
+    ) -> StorageResult<Option<mail_storage::DeliveryClaim>> {
+        self.inner.delivery_claim_state(connection_id)
+    }
+
+    fn refresh_claim_owner(&self, connection_id: &str) -> StorageResult<Option<String>> {
+        self.inner.refresh_claim_owner(connection_id)
+    }
 }
 
 struct World {
@@ -113,7 +145,7 @@ fn world() -> World {
     let (_service, escrow) = gmail_service(transport.clone(), clock.clone());
     let (secrets, secret_path) = secret_store("rotation");
     let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
-    let raw_connections = connection_store();
+    let raw_connections = durable_connection_store();
     let connections = Arc::new(FlakyCommitStore::new(raw_connections.clone()));
     let registry = Arc::new(ProviderRegistry::builtin());
     let broker = TokenBroker::new(
@@ -204,10 +236,10 @@ fn credential_is_encrypted_and_rotation_uses_it() {
         .broker
         .recover(&connection_id)
         .expect("the recovery check runs");
-    assert!(matches!(
-        recovery,
-        RecoveryOutcome::NeedsReauthorization { .. }
-    ));
+    // A connection whose credential is intact and claimed by nobody is
+    // honestly recoverable: recovery reports state, it does not refuse
+    // blanketly, and it changes nothing.
+    assert!(matches!(recovery, RecoveryOutcome::Recoverable { .. }));
 
     world.transport.clear();
     let outcome = world
@@ -570,7 +602,7 @@ fn ambiguous_provider_failure_does_not_report_recoverable() {
     let (_service, escrow) = gmail_service(transport.clone(), clock.clone());
     let (secrets, _) = secret_store("ambiguous-refresh");
     let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
-    let connections = connection_store();
+    let connections = durable_connection_store();
     let receipt = seed_connection(connections.as_ref(), secrets.as_ref());
     let broker = TokenBroker::new(
         connections.clone(),
@@ -592,4 +624,168 @@ fn ambiguous_provider_failure_does_not_report_recoverable() {
             .claim_refresh(&receipt.connection_id, 0, "another-worker")
             .unwrap()
     );
+}
+
+#[cfg(test)]
+mod safe_recovery {
+    use std::sync::Arc;
+
+    use mail_storage::ProviderConnectionStore;
+    use mail_storage::SecretStore;
+    use mail_upstream_oauth::clock::FixedClock;
+    use mail_upstream_oauth::error::UpstreamOAuthError;
+    use mail_upstream_oauth::flow::ProviderTokens;
+    use mail_upstream_oauth::onboarding::{DeliveryEscrow, EscrowedCredential, RoleAuthorizer};
+    use mail_upstream_oauth::profile::ProviderRegistry;
+    use mail_upstream_oauth::scope::Capability;
+    use mail_upstream_oauth::testing::MapClientSecrets;
+    use mail_upstream_oauth::token_broker::{RecoveryOutcome, TokenBroker};
+
+    use crate::common::durable_connection_store;
+    use crate::common::*;
+
+    const CONNECTION: &str = "recovery-connection";
+
+    fn credential() -> EscrowedCredential {
+        EscrowedCredential {
+            provider: "gmail".into(),
+            connection_id: CONNECTION.into(),
+            identity: "identity-1".into(),
+            expected_account: ACCOUNT.into(),
+            capabilities: vec![Capability::Read],
+            tokens: ProviderTokens {
+                access_token: "access-recovery".into(),
+                refresh_token: Some(FIRST_REFRESH_TOKEN.into()),
+                expires_at: Some(NOW + 3600),
+                scopes: vec!["https://mail.google.com/".into()],
+            },
+            issued_at: NOW,
+            expires_at: NOW + 600,
+        }
+    }
+
+    fn broker_for(
+        connections: Arc<dyn ProviderConnectionStore>,
+        secrets: Arc<dyn SecretStore>,
+        escrow: Arc<DeliveryEscrow>,
+    ) -> TokenBroker {
+        TokenBroker::new(
+            connections,
+            secrets,
+            gmail_transport(),
+            Arc::new(ProviderRegistry::builtin()),
+            Arc::new(RoleAuthorizer),
+            Arc::new(MapClientSecrets::new()),
+            escrow,
+            Arc::new(FixedClock::new(NOW)),
+        )
+    }
+
+    #[test]
+    fn a_crashed_delivery_is_reported_for_reconciliation_and_refuses_a_retry() {
+        let connections = durable_connection_store();
+        let (secrets, _path) = secret_store("recovery-crashed-delivery");
+        let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
+        let escrow = Arc::new(DeliveryEscrow::new());
+        let data_plane = broker_for(connections.clone(), secrets, escrow.clone());
+
+        // A delivery claimed the connection durably and crashed before any
+        // credential was written.
+        assert!(matches!(
+            connections
+                .claim_delivery(CONNECTION, "crashed-delivery", NOW)
+                .unwrap(),
+            mail_storage::DeliveryClaim::Won
+        ));
+
+        // Recovery reports the outstanding claim honestly and mutates
+        // nothing.
+        let recovery = data_plane
+            .recover(CONNECTION)
+            .expect("the recovery check runs");
+        match &recovery {
+            RecoveryOutcome::NeedsReauthorization { reason } => {
+                assert!(reason.contains("reconcil"), "{reason}");
+            }
+            other => panic!("expected NeedsReauthorization, got {other:?}"),
+        }
+
+        // The claim is intact: a retry delivery of the connection refuses,
+        // and recovery keeps reporting the outstanding claim.
+        let retry_ticket = escrow.issue(credential()).unwrap();
+        let error = data_plane
+            .deliver(&retry_ticket, &broker())
+            .expect_err("the crashed delivery claim is still held");
+        assert!(
+            matches!(&error, UpstreamOAuthError::Storage { reason }
+                if reason.contains("in progress")),
+            "{error:?}"
+        );
+        assert!(matches!(
+            data_plane.recover(CONNECTION).unwrap(),
+            RecoveryOutcome::NeedsReauthorization { .. }
+        ));
+    }
+
+    #[test]
+    fn a_clean_connection_is_recoverable_without_clearing_delivery_claims() {
+        let connections = durable_connection_store();
+        let (secrets, _path) = secret_store("recovery-clean");
+        let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
+        let escrow = Arc::new(DeliveryEscrow::new());
+        let ticket = escrow.issue(credential()).unwrap();
+        let data_plane = broker_for(connections.clone(), secrets.clone(), escrow.clone());
+        let receipt = data_plane
+            .deliver(&ticket, &broker())
+            .expect("the delivery completes");
+
+        // The delivered connection is honestly recoverable.
+        let recovery = data_plane
+            .recover(CONNECTION)
+            .expect("the recovery check runs");
+        match &recovery {
+            RecoveryOutcome::Recoverable {
+                generation,
+                secret_ref,
+            } => {
+                assert_eq!(*generation, receipt.generation);
+                assert_eq!(secret_ref, &receipt.secret_ref);
+            }
+            other => panic!("expected Recoverable, got {other:?}"),
+        }
+
+        // Recovery cleared nothing: the delivery claim is still permanent,
+        // so a second delivery of the connection is still refused.
+        let second = Arc::new(DeliveryEscrow::new());
+        let second_ticket = second.issue(credential()).unwrap();
+        let second_broker = broker_for(connections.clone(), secrets.clone(), second.clone());
+        let error = second_broker
+            .deliver(&second_ticket, &broker())
+            .expect_err("the delivered connection is not delivered again");
+        assert!(
+            matches!(&error, UpstreamOAuthError::Storage { reason }
+                if reason.contains("already delivered")),
+            "{error:?}"
+        );
+        assert!(matches!(
+            data_plane.recover(CONNECTION).unwrap(),
+            RecoveryOutcome::Recoverable { .. }
+        ));
+    }
+
+    #[test]
+    fn recovery_refuses_a_non_durable_store() {
+        let connections = crate::common::connection_store();
+        let (secrets, _path) = secret_store("recovery-in-memory");
+        let escrow = Arc::new(DeliveryEscrow::new());
+        let data_plane = broker_for(connections, Arc::new(secrets), escrow);
+        let error = data_plane
+            .recover(CONNECTION)
+            .expect_err("recovery refuses a store that does not vouch for durability");
+        assert!(
+            matches!(&error, UpstreamOAuthError::Storage { reason }
+                if reason.contains("durable")),
+            "{error:?}"
+        );
+    }
 }

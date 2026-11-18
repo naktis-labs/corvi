@@ -23,14 +23,18 @@
 
 use std::sync::Arc;
 
-use mail_storage::{ProviderConnectionStore, SecretAad, SecretRef, SecretStore};
+use mail_storage::crypto::random_bytes;
+use mail_storage::{
+    ConnectionStatus, DeliveryClaim, ProviderConnection, ProviderConnectionStore, RefreshState,
+    SecretAad, SecretRef, SecretStore,
+};
 
 use crate::clock::Clock;
 use crate::error::UpstreamOAuthError;
 use crate::flow::{RefreshExchange, refresh_access_token};
 use crate::onboarding::{
-    ClientSecretResolver, DeliveryEscrow, DeliveryReceipt, OnboardingAction, OnboardingAuthorizer,
-    OnboardingPrincipal, ScopedSecretDelivery,
+    ClientSecretResolver, DeliveryEscrow, DeliveryReceipt, EscrowedCredential, OnboardingAction,
+    OnboardingAuthorizer, OnboardingPrincipal, ScopedSecretDelivery,
 };
 use crate::profile::ProviderRegistry;
 use crate::scope::Capability;
@@ -117,7 +121,7 @@ pub struct TokenBroker {
     registry: Arc<ProviderRegistry>,
     authorizer: Arc<dyn OnboardingAuthorizer>,
     client_secrets: Arc<dyn ClientSecretResolver>,
-    _escrow: Arc<DeliveryEscrow>,
+    escrow: Arc<DeliveryEscrow>,
     clock: Arc<dyn Clock>,
 }
 
@@ -147,23 +151,178 @@ impl TokenBroker {
             registry,
             authorizer,
             client_secrets,
-            _escrow: escrow,
+            escrow,
             clock,
         }
     }
 
-    /// Deliveries are disabled until shared durable connection-level coordination
-    /// can be enforced across all writers. Tickets and credentials are preserved.
+    /// Deliver the credential behind a ticket into the secret store.
+    ///
+    /// The delivery is durable and exactly once per connection: a claim in
+    /// the connection store — one conditional `INSERT` — is held from
+    /// before the first write to the permanent delivery record, so two
+    /// escrows, two handles or two restarts naming one connection cannot
+    /// both write a secret. The connection store must vouch for its own
+    /// durability; an in-memory store is refused.
+    ///
+    /// The write order keeps the credential recoverable on any failure:
+    /// the secret is written first, then the refresh state that names it,
+    /// then the connection, and the ticket is claimed only after the
+    /// delivery record is permanent. A delivery that fails releases its
+    /// claim and leaves the ticket unclaimed, so it can be retried; an
+    /// abandoned claim requires explicit recovery or reauthorization.
     pub fn deliver(
         &self,
-        _ticket: &str,
+        ticket: &str,
         principal: &OnboardingPrincipal,
     ) -> Result<DeliveryReceipt, UpstreamOAuthError> {
         self.authorizer
             .authorize(principal, OnboardingAction::DeliverScopedSecret)?;
-        Err(UpstreamOAuthError::Storage {
-            reason: "delivery unavailable: shared durable connection coordination is not supported"
-                .to_owned(),
+        let now = self.clock.now();
+        if !self.connections.vouches_durability() {
+            return Err(UpstreamOAuthError::Storage {
+                reason: "delivery requires a durable connection store".to_owned(),
+            });
+        }
+        // The credential is read without taking it out: the escrow copy is
+        // only claimed once the credential is durable elsewhere, so a
+        // delivery that fails before the claim leaves the ticket valid for
+        // a retry.
+        let Some(credential) = self.escrow.peek(ticket, now)? else {
+            return Err(UpstreamOAuthError::InvalidRequest {
+                reason: "the delivery ticket is unknown or expired".to_owned(),
+            });
+        };
+        // Exactly one delivery of a connection may write: the claim is the
+        // database's decision, not this broker's. The claim's owner is
+        // random so that only the delivery that won it may release or
+        // complete it.
+        let owner = match random_bytes(16) {
+            Ok(bytes) => format!("delivery-{}", hex::encode(bytes)),
+            Err(error) => {
+                return Err(UpstreamOAuthError::Storage {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        match self
+            .connections
+            .claim_delivery(&credential.connection_id, &owner, now)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })? {
+            DeliveryClaim::Won => {}
+            DeliveryClaim::InProgress => {
+                return Err(UpstreamOAuthError::Storage {
+                    reason: "another delivery of this connection is in progress".to_owned(),
+                });
+            }
+            DeliveryClaim::Delivered => {
+                return Err(UpstreamOAuthError::Storage {
+                    reason: "the credential of this connection was already delivered".to_owned(),
+                });
+            }
+        }
+        // From here every failure releases the claim, so the ticket stays
+        // recoverable and unclaimed and the connection stays deliverable.
+        let receipt = match self.write_credential(&credential, now) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self
+                    .connections
+                    .release_delivery(&credential.connection_id, &owner);
+                return Err(error);
+            }
+        };
+        // The delivery record is permanent before the escrow copy is
+        // consumed: from here a second delivery of the connection is
+        // refused whatever happens to this process.
+        self.connections
+            .complete_delivery(&credential.connection_id, &owner, now)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        // The credential is durable and recorded; the escrow copy has no
+        // remaining role. A ticket that expired while it was being
+        // delivered simply stays behind unread.
+        let _ = self.escrow.claim(ticket, now)?;
+        Ok(receipt)
+    }
+
+    /// Write an escrowed credential into durable storage.
+    ///
+    /// The order is the recovery story: the secret first — it becomes the
+    /// only durable copy of the refresh token while the escrow still holds
+    /// its copy — then the refresh state that names it, and the connection
+    /// last. An `Active` connection therefore always has a refresh state,
+    /// whatever fails or crashes in between.
+    fn write_credential(
+        &self,
+        credential: &EscrowedCredential,
+        _now: u64,
+    ) -> Result<DeliveryReceipt, UpstreamOAuthError> {
+        let Some(refresh_token) = &credential.tokens.refresh_token else {
+            return Err(UpstreamOAuthError::Storage {
+                reason: "the escrowed credential carries no refresh token".to_owned(),
+            });
+        };
+        let aad = refresh_secret_aad(
+            &credential.provider,
+            &credential.connection_id,
+            &credential.identity,
+        );
+        let reference = self
+            .secrets
+            .put(
+                REFRESH_SECRET_OWNER,
+                &credential.connection_id,
+                refresh_token.as_bytes(),
+                &aad,
+            )
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        // A redelivery over an existing row keeps its generation, so the
+        // refresh state names the generation the connection is at.
+        let generation = self
+            .connections
+            .get_connection(&credential.connection_id)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?
+            .map(|connection| connection.generation)
+            .unwrap_or(0);
+        self.connections
+            .put_refresh_state(&RefreshState {
+                connection_id: credential.connection_id.clone(),
+                generation,
+                secret_ref: secret_ref_string(&reference),
+                expires_at: credential.tokens.expires_at.unwrap_or(0),
+                needs_reauthorization: false,
+            })
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        self.connections
+            .put_connection(&ProviderConnection {
+                connection_id: credential.connection_id.clone(),
+                provider: credential.provider.clone(),
+                account_ref: credential.expected_account.clone(),
+                identity: credential.identity.clone(),
+                capabilities: capability_names(&credential.capabilities),
+                status: ConnectionStatus::Active,
+                generation,
+                updated_at: _now,
+            })
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        Ok(DeliveryReceipt {
+            connection_id: credential.connection_id.clone(),
+            provider: credential.provider.clone(),
+            secret_ref: secret_ref_string(&reference),
+            expires_at: credential.tokens.expires_at,
+            generation,
         })
     }
 
@@ -354,9 +513,122 @@ impl TokenBroker {
 
     /// Recovery cannot establish exclusivity with an active or abandoned refresh.
     /// Refuse to assert recoverability without mutating the connection or claim.
-    pub fn recover(&self, _connection_id: &str) -> Result<RecoveryOutcome, UpstreamOAuthError> {
-        Ok(RecoveryOutcome::NeedsReauthorization {
-            reason: "refresh recovery requires atomic coordination; reconciliation or reauthorization is required".to_owned(),
+    /// Report the recovery state of a connection honestly.
+    ///
+    /// Recovery reads state and changes nothing: a connection that may
+    /// still be in flight — a delivery or a refresh claim that is held —
+    /// is reported as requiring reconciliation or reauthorization, and the
+    /// claim is left exactly as it was. An ambiguous provider outcome is
+    /// never reported as recoverable: a rotation that may have happened is
+    /// visible here as the refresh claim its worker still holds.
+    ///
+    /// The store must vouch for its own durability; an in-memory store is
+    /// refused, because recovery over records a restart forgets would be a
+    /// guess.
+    pub fn recover(&self, connection_id: &str) -> Result<RecoveryOutcome, UpstreamOAuthError> {
+        if !self.connections.vouches_durability() {
+            return Err(UpstreamOAuthError::Storage {
+                reason: "recovery requires a durable connection store".to_owned(),
+            });
+        }
+        // An outstanding delivery claim: the delivery may still be writing,
+        // so nothing about this connection may be touched.
+        if let Some(DeliveryClaim::InProgress) = self
+            .connections
+            .delivery_claim_state(connection_id)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?
+        {
+            return Ok(RecoveryOutcome::NeedsReauthorization {
+                reason: "a delivery of this connection is in flight; the outstanding claim must \
+                 be reconciled or the connection reauthorized"
+                    .to_owned(),
+            });
+        }
+        // An outstanding refresh claim: the rotation may still be running,
+        // or it died after the provider saw its request. Either way the
+        // credential is in question and the claim stays.
+        if self
+            .connections
+            .refresh_claim_owner(connection_id)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?
+            .is_some()
+        {
+            return Ok(RecoveryOutcome::NeedsReauthorization {
+                reason: "a refresh of this connection is in flight; refresh recovery requires \
+                 atomic coordination — reconciliation or reauthorization is required"
+                    .to_owned(),
+            });
+        }
+        let state = self
+            .connections
+            .get_refresh_state(connection_id)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        let Some(state) = state else {
+            let known = self
+                .connections
+                .get_connection(connection_id)
+                .map_err(|error| UpstreamOAuthError::Storage {
+                    reason: error.to_string(),
+                })?
+                .is_some();
+            return Ok(if known {
+                RecoveryOutcome::NeedsReauthorization {
+                    reason: "the connection has no refresh state".to_owned(),
+                }
+            } else {
+                RecoveryOutcome::NoCredential
+            });
+        };
+        if state.needs_reauthorization {
+            return Ok(RecoveryOutcome::NeedsReauthorization {
+                reason: "the connection is already marked as needing reauthorization".to_owned(),
+            });
+        }
+        let connection = self
+            .connections
+            .get_connection(connection_id)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?;
+        if let Some(connection) = connection {
+            match connection.status {
+                ConnectionStatus::NeedsReauthorization | ConnectionStatus::Disconnected => {
+                    return Ok(RecoveryOutcome::NeedsReauthorization {
+                        reason: format!("the connection is {}", connection.status.as_str()),
+                    });
+                }
+                ConnectionStatus::Active | ConnectionStatus::Degraded => {}
+            }
+        }
+        // A credential in the store that the refresh state does not name is
+        // an interrupted rotation: the provider may have seen it, so the
+        // credential in use is in question.
+        if let Some(reference) = self.stored_reference(connection_id)?
+            && let Some(committed) = committed_version(&state.secret_ref)
+        {
+            if reference.version > committed {
+                return Ok(RecoveryOutcome::NeedsReauthorization {
+                    reason: "a rotation was interrupted before it was committed; refresh \
+                     recovery requires atomic coordination — reconciliation or reauthorization \
+                     is required"
+                        .to_owned(),
+                });
+            }
+            if reference.version < committed {
+                return Ok(RecoveryOutcome::NeedsReauthorization {
+                    reason: "the committed credential is missing from the secret store".to_owned(),
+                });
+            }
+        }
+        Ok(RecoveryOutcome::Recoverable {
+            generation: state.generation,
+            secret_ref: state.secret_ref.clone(),
         })
     }
 

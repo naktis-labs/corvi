@@ -19,6 +19,10 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
+
+use mail_storage::crypto::{Cipher, derive_key};
+use mail_storage::sqlite::SqliteStore;
 use std::sync::Mutex;
 
 #[cfg(test)]
@@ -228,7 +232,7 @@ struct StoredTransaction {
 /// consume operation. Taking a transaction therefore fails closed without
 /// modifying it until durable single-use consumption is available.
 pub struct EncryptedTransactionStore {
-    secrets: Box<dyn mail_storage::SecretStore>,
+    sqlite: Arc<SqliteStore>,
 }
 
 impl fmt::Debug for EncryptedTransactionStore {
@@ -239,9 +243,19 @@ impl fmt::Debug for EncryptedTransactionStore {
 }
 
 impl EncryptedTransactionStore {
-    /// A store that writes into the given secret store.
-    pub fn new(secrets: Box<dyn mail_storage::SecretStore>) -> Self {
-        Self { secrets }
+    /// A store that consumes atomically in the given SQLite database.
+    ///
+    /// The store vouches for durability itself: an in-memory database is
+    /// refused, because a transaction that a restart forgets would redeem
+    /// twice.
+    pub fn over(sqlite: Arc<SqliteStore>) -> Result<Self, UpstreamOAuthError> {
+        sqlite
+            .vouches_durability()
+            .then_some(())
+            .ok_or_else(|| UpstreamOAuthError::Storage {
+                reason: "the transaction store must be durable".to_owned(),
+            })?;
+        Ok(Self { sqlite })
     }
 
     /// The context an envelope is bound to.
@@ -262,60 +276,74 @@ impl EncryptedTransactionStore {
 
 impl TransactionStore for EncryptedTransactionStore {
     fn insert(&self, transaction: &OnboardingTransaction) -> Result<(), UpstreamOAuthError> {
-        let document = StoredTransaction {
+        let plaintext = serde_json::to_vec(&StoredTransaction {
             transaction: transaction.clone(),
             consumed: false,
-        };
-        let plaintext = serde_json::to_vec(&document).map_err(|_| UpstreamOAuthError::Storage {
+        })
+        .map_err(|_| UpstreamOAuthError::Storage {
             reason: "the transaction cannot be encoded".to_owned(),
         })?;
-        self.secrets
-            .put(
-                TRANSACTION_STORE_OWNER,
-                &transaction.state,
-                &plaintext,
-                &Self::aad(&transaction.state),
-            )
+        let key = derive_key(
+            TRANSACTION_WRAPPING_KEY,
+            &salt(&transaction.state),
+            &info(&transaction.state),
+        )?;
+        let (nonce, ciphertext) = Cipher::new(&key)?.seal(
+            &plaintext,
+            &Self::aad(&transaction.state).to_bytes(&transaction.state, "k1", 1),
+        )?;
+        self.sqlite
+            .put_onboarding_transaction(&transaction.state, &nonce, &ciphertext)
             .map_err(|error| UpstreamOAuthError::Storage {
                 reason: error.to_string(),
             })?;
         Ok(())
     }
 
-    fn take(&self, _state: &str) -> Result<Option<OnboardingTransaction>, UpstreamOAuthError> {
-        Err(UpstreamOAuthError::Storage {
-            reason: "atomic durable transaction consumption is unavailable".to_owned(),
-        })
+    fn take(&self, state: &str) -> Result<Option<OnboardingTransaction>, UpstreamOAuthError> {
+        let key = derive_key(TRANSACTION_WRAPPING_KEY, &salt(state), &info(state))?;
+        self.sqlite
+            .consume_onboarding_transaction(state)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })?
+            .map(|(nonce, ciphertext)| {
+                let plaintext = Cipher::new(&key)?.open(
+                    &nonce,
+                    &ciphertext,
+                    &Self::aad(state).to_bytes(state, "k1", 1),
+                )?;
+                let document: StoredTransaction =
+                    serde_json::from_slice(&plaintext).map_err(|_| {
+                        UpstreamOAuthError::Storage {
+                            reason: "the stored transaction is not readable".to_owned(),
+                        }
+                    })?;
+                Ok(document.transaction)
+            })
+            .transpose()
     }
+}
+
+/// The wrapping key of the transaction envelopes.
+const TRANSACTION_WRAPPING_KEY: &[u8] = b"onboarding-transaction-wrapping-key";
+
+/// The derivation salt of one state's key.
+fn salt(state: &str) -> Vec<u8> {
+    format!("corvi-onboarding-transaction/{state}").into_bytes()
+}
+
+/// The derivation info of one state's key.
+fn info(state: &str) -> Vec<u8> {
+    format!("corvi-onboarding-transaction-key/{state}").into_bytes()
 }
 
 #[cfg(test)]
 mod encrypted_fail_closed_tests {
     use super::*;
-    use mail_storage::{EncryptedFileSecretStore, SecretStore};
     #[test]
-    fn encrypted_take_refuses_without_modifying_existing_record() {
-        let path = std::env::temp_dir()
-            .join(format!(
-                "corvi-txn-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ))
-            .join("secrets");
-        let secrets =
-            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
-        let aad = EncryptedTransactionStore::aad("state");
-        let reference = secrets
-            .put(TRANSACTION_STORE_OWNER, "state", b"original", &aad)
-            .unwrap();
-        let store = EncryptedTransactionStore::new(Box::new(secrets));
-        assert!(store.take("state").is_err());
-        assert_eq!(
-            store.secrets.get(&reference, &aad).unwrap(),
-            Some(b"original".to_vec())
-        );
+    fn in_memory_store_is_refused_at_construction() {
+        let sqlite = Arc::new(SqliteStore::open_in_memory().unwrap());
+        assert!(EncryptedTransactionStore::over(sqlite).is_err());
     }
 }

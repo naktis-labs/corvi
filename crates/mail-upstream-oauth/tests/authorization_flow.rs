@@ -452,3 +452,115 @@ fn no_credential_appears_in_debug_output() {
         "a redacted token prints as a quoted string of 43 characters plus two quotes"
     );
 }
+
+#[cfg(test)]
+mod encrypted_transaction_durability {
+    use mail_storage::SqliteStore;
+    use mail_upstream_oauth::transaction::{EncryptedTransactionStore, TransactionStore};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    fn store() -> (Arc<EncryptedTransactionStore>, Arc<SqliteStore>) {
+        let sqlite = Arc::new(
+            SqliteStore::open(std::env::temp_dir().join(format!(
+                    "corvi-txn-store-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                )))
+            .unwrap(),
+        );
+        (
+            Arc::new(EncryptedTransactionStore::over(sqlite.clone()).unwrap()),
+            sqlite,
+        )
+    }
+
+    fn transaction() -> mail_upstream_oauth::transaction::OnboardingTransaction {
+        mail_upstream_oauth::transaction::OnboardingTransaction {
+            transaction_id: "txn-1".to_owned(),
+            connection_id: "conn-1".to_owned(),
+            provider: "gmail".to_owned(),
+            issuer: "https://provider.example".to_owned(),
+            client_id: "client".to_owned(),
+            redirect_uri: "http://127.0.0.1:8400/callback".to_owned(),
+            code_verifier: "verifier".to_owned(),
+            code_challenge: "challenge".to_owned(),
+            state: "state-1".to_owned(),
+            nonce: "nonce".to_owned(),
+            scopes: Vec::new(),
+            capabilities: Vec::new(),
+            expected_account: "acct".to_owned(),
+            identity: "identity".to_owned(),
+            principal: "owner".to_owned(),
+            principal_roles: Vec::new(),
+            issued_at: 1,
+            expires_at: 2,
+        }
+    }
+
+    #[test]
+    fn take_consumes_exactly_once_across_handles() {
+        let (store, _) = store();
+        store.insert(&transaction()).unwrap();
+        assert!(store.take("state-1").unwrap().is_some());
+        assert!(store.take("state-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn take_survives_a_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "corvi-txn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sqlite = Arc::new(SqliteStore::open(&path).unwrap());
+        let store = Arc::new(EncryptedTransactionStore::over(sqlite.clone()).unwrap());
+        store.insert(&transaction()).unwrap();
+        drop(store);
+        drop(sqlite);
+        let reopened = Arc::new(SqliteStore::open(&path).unwrap());
+        assert!(
+            EncryptedTransactionStore::over(reopened.clone())
+                .unwrap()
+                .take("state-1")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            EncryptedTransactionStore::over(reopened)
+                .unwrap()
+                .take("state-1")
+                .unwrap()
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn concurrent_takes_redeem_at_most_once() {
+        let (store, _) = store();
+        store.insert(&transaction()).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    store.take("state-1").unwrap().is_some()
+                })
+            })
+            .collect();
+        let results: Vec<bool> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|won| **won).count(), 1);
+    }
+}

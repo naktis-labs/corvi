@@ -11,16 +11,17 @@
 //! The envelope is ChaCha20-Poly1305 under a key derived from a shared
 //! secret, bound to the recipient, the envelope identifier and the expiry.
 //! Modifying any of it fails to authenticate. Redeeming it twice is
-//! refused by the one-time guard, and redeeming it after the expiry is
-//! refused by the clock. Nothing in the envelope is readable without the
+//! refused by a durable one-time guard, and redeeming it after the expiry
+//! is refused by the clock. Nothing in the envelope is readable without the
 //! key, so it can travel through a channel that is not private — but it
 //! still must not travel through a channel that logs.
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use mail_storage::crypto::{Cipher, derive_key, random_bytes};
+use mail_storage::sqlite::SqliteStore;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HandoffFailure, UpstreamOAuthError};
@@ -124,10 +125,11 @@ pub trait OneTimeUseGuard: fmt::Debug + Send + Sync {
 /// This guard is **single-process by construction**: its map lives in this
 /// process, so a second process — or a restart of this one — has its own
 /// empty map, and an envelope redeemed there is a replay this guard cannot
-/// see. Use it where exactly one process redeems and a restart between the
-/// issue and the redemption of an envelope is not a threat the deployment
-/// needs to answer. Every other deployment implements
-/// [`OneTimeUseGuard`] over durable, shared state instead.
+/// see. Redemption does not accept it: [`redeem_handoff`] takes a
+/// [`DurableOneTimeUseGuard`] by type, so a process-local guard has no
+/// release path to hand an envelope to. Use it where exactly one process
+/// consumes identifiers and a restart between the issue and the redemption
+/// of an envelope is not a threat the deployment needs to answer.
 #[derive(Debug, Default)]
 pub struct SingleProcessOneTimeUseGuard {
     used: Mutex<BTreeMap<String, u64>>,
@@ -150,6 +152,41 @@ impl OneTimeUseGuard for SingleProcessOneTimeUseGuard {
         }
         used.insert(id.to_owned(), now);
         Ok(true)
+    }
+}
+
+/// A guard whose used identifiers live in a durable SQLite database.
+///
+/// Consuming an identifier is one conditional `INSERT` in the database, so
+/// two guards over the same database file — two handles in this process,
+/// or one handle before and after a restart — cannot both consume it: the
+/// first `INSERT` wins, every later one conflicts. The database vouches
+/// for its own durability; an in-memory database is refused at
+/// construction, because a record a restart forgets is a replay let in.
+#[derive(Debug)]
+pub struct DurableOneTimeUseGuard {
+    sqlite: Arc<SqliteStore>,
+}
+
+impl DurableOneTimeUseGuard {
+    /// A guard over a durable database.
+    pub fn over(sqlite: Arc<SqliteStore>) -> Result<Self, UpstreamOAuthError> {
+        if !sqlite.vouches_durability() {
+            return Err(UpstreamOAuthError::Storage {
+                reason: "the one-time handoff guard must be durable".to_owned(),
+            });
+        }
+        Ok(Self { sqlite })
+    }
+}
+
+impl OneTimeUseGuard for DurableOneTimeUseGuard {
+    fn consume(&self, id: &str, now: u64) -> Result<bool, UpstreamOAuthError> {
+        self.sqlite
+            .consume_one_time_use(id, now)
+            .map_err(|error| UpstreamOAuthError::Storage {
+                reason: error.to_string(),
+            })
     }
 }
 
@@ -256,19 +293,21 @@ pub fn issue_handoff(
     Ok(envelope)
 }
 
-/// Validate an envelope, but refuse redemption without durable replay protection.
+/// Validate an envelope and release its payload exactly once.
 ///
 /// Lifetime, recipient and ciphertext authentication are checked without
-/// consuming the identifier. Even an authenticated envelope is refused and
-/// its payload is not released: the guard interface cannot enforce shared
-/// durable replay protection across processes or restarts.
+/// consuming the identifier: a tampered, foreign, expired or misdated
+/// envelope is refused and burns nothing. Only an authenticated payload
+/// reaches the guard, and the guard is durable by type — one conditional
+/// `INSERT` in a SQLite database — so a second handle, or a handle opened
+/// after a restart, is told the identifier was already used.
 pub fn redeem_handoff(
     envelope: &HandoffEnvelope,
     shared_key: &[u8],
     recipient: &str,
     now: u64,
     lifetime: &HandoffLifetime,
-    guard: &dyn OneTimeUseGuard,
+    guard: &DurableOneTimeUseGuard,
 ) -> Result<HandoffPayload, UpstreamOAuthError> {
     if now > envelope.expires_at {
         return Err(UpstreamOAuthError::HandoffRejected {
@@ -316,10 +355,13 @@ pub fn redeem_handoff(
             reason: HandoffFailure::Tampered,
         }
     })?;
-    // No available guard implementation can enforce shared durable replay
-    // protection through this interface, so authenticated payloads are not released.
-    let _ = (guard, payload);
-    Err(UpstreamOAuthError::Storage {
-        reason: "handoff redemption requires enforced durable replay protection".to_owned(),
-    })
+    // The identifier is consumed only after the payload authenticates, so
+    // no refused envelope ever burns it. The consume is the database's
+    // decision: exactly one caller is told the identifier was fresh.
+    if !guard.consume(&envelope.envelope_id, now)? {
+        return Err(UpstreamOAuthError::HandoffRejected {
+            reason: HandoffFailure::Replayed,
+        });
+    }
+    Ok(payload)
 }

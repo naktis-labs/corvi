@@ -61,7 +61,7 @@ pub mod transport;
 pub use error::{ConnectionStatus, HandoffFailure, UpstreamOAuthError};
 pub use flow::{DevicePoll, ProviderTokens};
 pub use handoff::{
-    HandoffEnvelope, HandoffLifetime, HandoffPayload, OneTimeUseGuard,
+    DurableOneTimeUseGuard, HandoffEnvelope, HandoffLifetime, HandoffPayload, OneTimeUseGuard,
     SingleProcessOneTimeUseGuard, issue_handoff, redeem_handoff,
 };
 pub use onboarding::{

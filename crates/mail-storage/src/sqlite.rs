@@ -40,7 +40,7 @@ use crate::grants::{
 use crate::mailbox::{Checkpoint, MailboxStateStore, OpaqueId, OpaqueKind, WorkerLease};
 use crate::migration;
 use crate::provider::{
-    ConnectionStatus, ProviderConnection, ProviderConnectionStore, RefreshState,
+    ConnectionStatus, DeliveryClaim, ProviderConnection, ProviderConnectionStore, RefreshState,
 };
 use crate::revocation::{RevocationLedger, install_ledger, ledger_path};
 use crate::submission::{IdempotencyReservation, Submission, SubmissionState, SubmissionStore};
@@ -792,6 +792,93 @@ fn is_constraint_violation(error: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(failure, _)
             if failure.code == rusqlite::ErrorCode::ConstraintViolation
     )
+}
+
+impl SqliteStore {
+    /// Vouch for durability: only a file-backed database survives a restart.
+    pub fn vouches_durability(&self) -> bool {
+        self.path() != std::path::Path::new(":memory:")
+    }
+
+    /// Store one encrypted onboarding transaction, replacing any earlier one.
+    pub fn put_onboarding_transaction(
+        &self,
+        state: &str,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> StorageResult<()> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT INTO onboarding_transactions (state, envelope, consumed) VALUES (?1, ?2, 0)
+                 ON CONFLICT(state) DO UPDATE SET envelope = excluded.envelope, consumed = 0",
+                params![
+                    state,
+                    encode_list(&[hex::encode(nonce), hex::encode(ciphertext)])
+                ],
+            )
+            .map(|_| ())
+            .map_err(|error| StorageError::Backend(error.to_string()))
+    }
+
+    /// Consume one onboarding transaction atomically: at most one caller
+    /// receives the envelope, every other sees absence.
+    pub fn consume_onboarding_transaction(
+        &self,
+        state: &str,
+    ) -> StorageResult<Option<(Vec<u8>, Vec<u8>)>> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let row = transaction
+            .query_row(
+                "SELECT envelope FROM onboarding_transactions WHERE state = ?1 AND consumed = 0",
+                params![state],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let Some(envelope) = row else {
+            return Ok(None);
+        };
+        let parts = decode_list(&envelope);
+        let (nonce, ciphertext) = match (parts.first(), parts.get(1)) {
+            (Some(nonce), Some(ciphertext)) => (hex::decode(nonce), hex::decode(ciphertext)),
+            _ => {
+                return Err(StorageError::Invalid(
+                    "the stored transaction envelope is corrupt".to_owned(),
+                ));
+            }
+        };
+        let changed = transaction
+            .execute(
+                "UPDATE onboarding_transactions SET consumed = 1 WHERE state = ?1 AND consumed = 0",
+                params![state],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        transaction
+            .commit()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok((changed == 1).then_some((nonce.unwrap(), ciphertext.unwrap())))
+    }
+
+    /// Consume one one-time-use identifier atomically: the first caller
+    /// inserts the row and is told the identifier was fresh; every caller
+    /// after that — in this process, or after a restart — conflicts and is
+    /// told it was already used. One conditional `INSERT` is the whole
+    /// consume, so the decision is the database's, not the caller's.
+    pub fn consume_one_time_use(&self, identifier: &str, now: u64) -> StorageResult<bool> {
+        let connection = self.lock()?;
+        let inserted = connection
+            .execute(
+                "INSERT INTO one_time_use_guards (identifier, used_at) VALUES (?1, ?2)
+                 ON CONFLICT(identifier) DO NOTHING",
+                params![identifier, now as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(inserted == 1)
+    }
 }
 
 impl GrantStore for SqliteStore {
@@ -1811,6 +1898,102 @@ impl ProviderConnectionStore for SqliteStore {
             .commit()
             .map_err(|error| StorageError::Backend(error.to_string()))?;
         Ok(changed > 0)
+    }
+
+    fn vouches_durability(&self) -> bool {
+        // The inherent method vouches for the database file; this is the
+        // trait's way of asking the same question.
+        self.vouches_durability()
+    }
+
+    fn claim_delivery(
+        &self,
+        connection_id: &str,
+        owner: &str,
+        now: u64,
+    ) -> StorageResult<DeliveryClaim> {
+        let connection = self.lock()?;
+        let inserted = connection
+            .execute(
+                "INSERT INTO connection_deliveries (connection_id, owner, state, updated_at)
+                 VALUES (?1, ?2, 'delivering', ?3)
+                 ON CONFLICT(connection_id) DO NOTHING",
+                params![connection_id, owner, now as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        if inserted == 1 {
+            return Ok(DeliveryClaim::Won);
+        }
+        let state: Option<String> = connection
+            .query_row(
+                "SELECT state FROM connection_deliveries WHERE connection_id = ?1",
+                params![connection_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(match state.as_deref() {
+            Some("delivered") => DeliveryClaim::Delivered,
+            _ => DeliveryClaim::InProgress,
+        })
+    }
+
+    fn complete_delivery(&self, connection_id: &str, owner: &str, now: u64) -> StorageResult<()> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "UPDATE connection_deliveries SET state = 'delivered', updated_at = ?3
+                 WHERE connection_id = ?1 AND owner = ?2 AND state = 'delivering'",
+                params![connection_id, owner, now as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StorageError::Conflict(
+                "the delivery claim of the connection is not held".to_owned(),
+            ))
+        }
+    }
+
+    fn release_delivery(&self, connection_id: &str, owner: &str) -> StorageResult<()> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "DELETE FROM connection_deliveries
+                 WHERE connection_id = ?1 AND owner = ?2 AND state = 'delivering'",
+                params![connection_id, owner],
+            )
+            .map(|_| ())
+            .map_err(|error| StorageError::Backend(error.to_string()))
+    }
+
+    fn delivery_claim_state(&self, connection_id: &str) -> StorageResult<Option<DeliveryClaim>> {
+        let connection = self.lock()?;
+        let state: Option<String> = connection
+            .query_row(
+                "SELECT state FROM connection_deliveries WHERE connection_id = ?1",
+                params![connection_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(state.as_deref().map(|state| match state {
+            "delivered" => DeliveryClaim::Delivered,
+            _ => DeliveryClaim::InProgress,
+        }))
+    }
+
+    fn refresh_claim_owner(&self, connection_id: &str) -> StorageResult<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT owner FROM refresh_claims WHERE connection_id = ?1",
+                params![connection_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))
     }
 }
 

@@ -502,9 +502,10 @@ impl DeliveryEscrow {
 
     /// Attempt to accept a credential from a remote handoff.
     ///
-    /// Redemption currently fails closed without releasing a payload or
-    /// creating a ticket: the guard interface cannot enforce durable replay
-    /// protection across processes or restarts.
+    /// Redemption releases the payload exactly once: the guard is a durable
+    /// one-time-use guard over SQLite, so a replay — from another handle or
+    /// after a restart — is refused and escrows nothing. A refused envelope
+    /// never consumes its identifier.
     pub fn accept_handoff(
         &self,
         envelope: &crate::handoff::HandoffEnvelope,
@@ -512,7 +513,7 @@ impl DeliveryEscrow {
         recipient: &str,
         now: u64,
         lifetime: &crate::handoff::HandoffLifetime,
-        guard: &dyn crate::handoff::OneTimeUseGuard,
+        guard: &crate::handoff::DurableOneTimeUseGuard,
     ) -> Result<String, UpstreamOAuthError> {
         let payload =
             crate::handoff::redeem_handoff(envelope, shared_key, recipient, now, lifetime, guard)?;

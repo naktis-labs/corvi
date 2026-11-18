@@ -64,10 +64,10 @@ Nothing in the third state is emulated. Where a proposal cannot be implemented h
 | Dynamic client registration disabled by default | Implemented as logic | `crates/mail-auth` |
 | The built-in issuer refuses to start without persistent storage | Implemented as logic | `crates/mail-auth` |
 | External-issuer-only mode without the built-in issuer | Implemented as logic | `crates/mail-auth` |
-| Upstream provider onboarding: registration profiles, scope and callback allowlists, account validation | Partially implemented as logic | `crates/mail-upstream-oauth`; encrypted transaction consumption is unavailable without atomic cross-instance coordination |
-| Encrypted handoff redemption | **Unavailable, fails closed** | Envelopes are authenticated, but redemption refuses to release payloads without enforceable durable replay protection |
-| Provider refresh tokens encrypted at rest and rotated as a compare-and-swap | Implemented as logic | `crates/mail-upstream-oauth`; recovery fails closed and requires reconciliation or reauthorization without atomic coordination |
-| Scoped secret delivery | **Unavailable, fails closed** | `crates/mail-upstream-oauth` refuses delivery until shared durable connection-level coordination is enforced; escrowed credentials remain untouched |
+| Upstream provider onboarding: registration profiles, scope and callback allowlists, account validation | Implemented as logic | `crates/mail-upstream-oauth`; onboarding transactions are encrypted at rest and consumed atomically (exactly once) through SQLite |
+| One-time encrypted authenticated handoff, replay and tamper resistant | Implemented as logic | `crates/mail-upstream-oauth`; redemption requires a durable one-time-use guard backed by SQLite and releases a payload exactly once across handles and restarts; a tampered envelope burns nothing |
+| Provider refresh tokens encrypted at rest and rotated as a compare-and-swap | Implemented as logic | `crates/mail-upstream-oauth`; recovery is a pure diagnostic — coherent state is recoverable, outstanding or ambiguous states require reconciliation or reauthorization and are never mutated by recovery |
+| Scoped secret delivery | Implemented as logic | `crates/mail-upstream-oauth`; delivery is exactly-once per connection through a durable claim — two escrows cannot both deliver, a failed write leaves the ticket recoverable, and a crash in-flight requires reauthorization rather than a silent retry |
 | Live provider onboarding and device flow | **Not implemented** | No provider HTTP client is available offline; the device flow is advertised only for providers that support it |
 
 ## Control plane

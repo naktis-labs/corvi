@@ -63,7 +63,9 @@ pub use grants::{
     RevocationKind,
 };
 pub use mailbox::{Checkpoint, MailboxStateStore, OpaqueId, OpaqueKind, WorkerLease};
-pub use provider::{ConnectionStatus, ProviderConnection, ProviderConnectionStore, RefreshState};
+pub use provider::{
+    ConnectionStatus, DeliveryClaim, ProviderConnection, ProviderConnectionStore, RefreshState,
+};
 pub use revocation::{LedgerEntry, RevocationLedger};
 pub use secret::{EncryptedFileSecretStore, SecretAad, SecretRef, SecretStore};
 pub use sqlite::SqliteStore;

@@ -17,7 +17,7 @@
 //! leaves the connection marked as needing reauthorization rather than
 //! silently rotating twice.
 
-use crate::error::StorageResult;
+use crate::error::{StorageError, StorageResult};
 
 /// Historical refresh-claim interval, retained for API compatibility.
 /// Expiry does not authorize takeover of an ambiguous external refresh.
@@ -162,4 +162,92 @@ pub trait ProviderConnectionStore {
     /// Disconnecting invalidates the credential, the cached content, the
     /// sync state and the background jobs of that connection.
     fn disconnect(&self, connection_id: &str, now: u64) -> StorageResult<bool>;
+
+    /// Vouch for the durability of this store's records.
+    ///
+    /// Delivery coordination a restart forgets cannot protect a credential,
+    /// so a store that does not vouch is refused before delivery touches
+    /// anything. The default refuses: an unknown store must prove it is
+    /// durable, not be believed.
+    fn vouches_durability(&self) -> bool {
+        false
+    }
+
+    /// Claim the right to deliver the credential of one connection.
+    ///
+    /// The claim is one conditional `INSERT` in durable state: the first
+    /// caller holds it, and every other caller is told whether a delivery
+    /// is in flight or the credential was already delivered. The claim
+    /// survives a restart. A delivery that fails releases it; an abandoned
+    /// one requires explicit recovery or reauthorization.
+    fn claim_delivery(
+        &self,
+        _connection_id: &str,
+        _owner: &str,
+        _now: u64,
+    ) -> StorageResult<DeliveryClaim> {
+        Err(StorageError::Unsupported(
+            "durable delivery claims are unsupported".to_owned(),
+        ))
+    }
+
+    /// Complete a held delivery claim, permanently.
+    ///
+    /// The completion succeeds only for the caller that holds the claim,
+    /// so a delivered credential is recorded exactly once.
+    fn complete_delivery(
+        &self,
+        _connection_id: &str,
+        _owner: &str,
+        _now: u64,
+    ) -> StorageResult<()> {
+        Err(StorageError::Unsupported(
+            "durable delivery claims are unsupported".to_owned(),
+        ))
+    }
+
+    /// Release a held delivery claim after a failed delivery attempt.
+    ///
+    /// The release succeeds only for the caller that holds the claim, so a
+    /// failed delivery never frees the connection for a delivery it did
+    /// not make.
+    fn release_delivery(&self, _connection_id: &str, _owner: &str) -> StorageResult<()> {
+        Err(StorageError::Unsupported(
+            "durable delivery claims are unsupported".to_owned(),
+        ))
+    }
+
+    /// Read the state of a connection's delivery record, without touching it.
+    ///
+    /// `None` means the connection was never delivered through the durable
+    /// path. Recovery reads this to report an in-flight delivery honestly.
+    fn delivery_claim_state(&self, _connection_id: &str) -> StorageResult<Option<DeliveryClaim>> {
+        Err(StorageError::Unsupported(
+            "durable delivery claims are unsupported".to_owned(),
+        ))
+    }
+
+    /// Read the owner of a connection's outstanding refresh claim, without
+    /// touching it.
+    ///
+    /// `None` means no refresh claim is held. Recovery reads this to
+    /// report an in-flight or abandoned rotation honestly; taking or
+    /// releasing the claim from recovery would mutate a connection that
+    /// may still be in flight.
+    fn refresh_claim_owner(&self, _connection_id: &str) -> StorageResult<Option<String>> {
+        Err(StorageError::Unsupported(
+            "refresh claim reads are unsupported".to_owned(),
+        ))
+    }
+}
+
+/// What a durable delivery claim answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryClaim {
+    /// The caller now holds the connection's delivery claim.
+    Won,
+    /// Another delivery holds the claim and has not finished.
+    InProgress,
+    /// The credential of the connection was already delivered.
+    Delivered,
 }

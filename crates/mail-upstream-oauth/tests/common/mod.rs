@@ -199,6 +199,16 @@ pub fn connection_store() -> Arc<SqliteStore> {
     Arc::new(SqliteStore::open_in_memory().expect("the store opens"))
 }
 
+/// A file-backed connection store: its records survive a restart.
+pub fn durable_connection_store() -> Arc<SqliteStore> {
+    Arc::new(
+        SqliteStore::open(
+            std::env::temp_dir().join(format!("corvi-connections-{}", unique_suffix())),
+        )
+        .expect("the store opens"),
+    )
+}
+
 /// Random suffix for a test directory.
 ///
 /// The suffix is unique per call inside this process, and unique per
@@ -214,4 +224,9 @@ fn unique_suffix() -> String {
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
     format!("{}-{call}-{started}", std::process::id())
+}
+
+/// The random suffix for a test path, exported for the delivery tests.
+pub fn unique_suffix_pub() -> String {
+    unique_suffix()
 }

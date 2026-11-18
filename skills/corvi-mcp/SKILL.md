@@ -272,7 +272,8 @@ for a retry of the same message.
 - `submitted` — the upstream took the message. It does not mean the
   recipient read it.
 - `failed` — the send was refused before the upstream took it. The
-  `failureCode` says why.
+  `failureCode` says why. A retry may reuse the same key: a definite refusal
+  releases it, so the retry is a new send rather than a replay.
 - `unknown` — the outcome is ambiguous. **Do not retry.** A blind retry can
   deliver the message twice. Report the ambiguity and let a human decide.
 

@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package corvi.config.v1;
+
+// Configuration publication between the control plane and the data plane.
+//
+// This surface is deliberately separate from the provider plugin surface in
+// corvi.provider.v1. ADR-0001 places configuration publication in the
+// control plane and provider plugins in third-party OCI images, so a provider
+// plugin can never publish configuration.
+//
+// The connection is authenticated mTLS and the peer identity is authorized
+// before dispatch. Servers enforce a 1 MiB (1048576 byte) limit on every
+// message.
+//
+// The digest is the lowercase hex SHA-256 of the snapshot bytes, computed by
+// the publisher. The store recomputes it, refuses a snapshot whose digest
+// does not match, and returns the digest it expects in the acknowledgement.
+// The acknowledgement carries the same value, so a conforming publisher can
+// always complete the handshake.
+
+service ConfigurationService {
+  rpc PublishSnapshot(PublishSnapshotRequest) returns (PublishSnapshotResponse);
+  rpc AcknowledgeSnapshot(AcknowledgeSnapshotRequest) returns (AcknowledgeSnapshotResponse);
+}
+
+message PublishSnapshotRequest {
+  uint32 contract_version = 1;
+  // The generation the snapshot would activate as.
+  uint64 generation = 2;
+  // The complete configuration snapshot document. At most 1 MiB
+  // (1048576 bytes).
+  bytes bounded_snapshot = 3;
+  // Lowercase hex SHA-256 over bounded_snapshot.
+  string digest = 4;
+}
+message PublishSnapshotResponse {
+  uint32 contract_version = 1;
+  bool accepted = 2;
+  // The digest the store requires in the acknowledgement.
+  string digest = 3;
+}
+message AcknowledgeSnapshotRequest {
+  uint32 contract_version = 1;
+  uint64 generation = 2;
+  // The digest returned by PublishSnapshot.
+  string digest = 3;
+}
+message AcknowledgeSnapshotResponse {
+  uint32 contract_version = 1;
+  bool activated = 2;
+}

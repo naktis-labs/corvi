@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mail-admin",
     "crates/mail-api",
     "crates/mail-auth",
     "crates/mail-core",
@@ -11,6 +12,7 @@ members = [
     "crates/mail-smtp",
     "crates/mail-storage",
     "crates/mail-upstream-oauth",
+    "crates/provider-migadu",
 ]
 
 [workspace.package]

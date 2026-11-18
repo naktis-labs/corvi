@@ -544,6 +544,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail-auth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "hmac",
+ "mail-core",
+ "mail-storage",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "mail-config"
 version = "0.1.0"
 dependencies = [

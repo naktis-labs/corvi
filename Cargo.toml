@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mail-api",
+    "crates/mail-auth",
     "crates/mail-core",
     "crates/mail-config",
     "crates/mail-imap",

@@ -225,7 +225,11 @@ impl<'a> SyncEngine<'a> {
         let generation = checkpoint.as_ref().map_or(0, |c| c.generation);
         let changes = source
             .changes_since(request.mailbox, cursor.as_deref())
-            .map_err(|error| QueueError::Upstream(error.to_string()))?;
+            .map_err(|error| {
+                // The text the source failed with came from the upstream,
+                // so the error carries the kind of failure, not its text.
+                QueueError::Upstream(crate::queue::classify_transport_failure(&error).to_owned())
+            })?;
         let mut run = SyncRun {
             observed: changes.changes.len(),
             ..SyncRun::default()
@@ -233,7 +237,13 @@ impl<'a> SyncEngine<'a> {
         for change in &changes.changes {
             let message = source
                 .message(request.mailbox, &change.id)
-                .map_err(|error| QueueError::Upstream(error.to_string()))?;
+                .map_err(|error| {
+                    // As above: the upstream's own words stay on the
+                    // transport side of the boundary.
+                    QueueError::Upstream(
+                        crate::queue::classify_transport_failure(&error).to_owned(),
+                    )
+                })?;
             let normalized = message.into_normalized();
             if gate.disclosure(&normalized) == Disclosure::Hidden {
                 // The message must not be mentioned at all: no event, no
@@ -251,12 +261,30 @@ impl<'a> SyncEngine<'a> {
             events.publish(&event)?;
             notifications.notify(&event)?;
             run.published += 1;
-            if self.cache.is_enabled() {
-                let content = serde_json::to_vec(&normalized).map_err(|error| {
+            // The cache is written only when the deployment opted in to it
+            // twice over: the cache itself is switched on, and the
+            // `encryptedCache` feature flag is on. A cache that was
+            // constructed anyway is not an opt-in, and a message body must
+            // not be persisted on the strength of a wiring accident. Like
+            // a message the policy hides, a message that may not be cached
+            // is simply not cached; the pass itself goes on.
+            let cache_wanted =
+                self.cache.is_enabled() && self.features.is_enabled(Feature::EncryptedCache);
+            if cache_wanted {
+                let mut content = normalized;
+                // What goes into the cache is stored content, and stored
+                // content is sanitized: `NormalizedMessage::html_body` is
+                // documented as the sanitized body, so the cached copy is
+                // put through the policy crate's sanitizer rather than
+                // carrying the upstream's markup as it arrived.
+                content.html_body = content
+                    .html_body
+                    .map(|html| mail_policy::html::sanitize_html(&html));
+                let bytes = serde_json::to_vec(&content).map_err(|error| {
                     QueueError::Invalid(format!("the message is not serializable: {error}"))
                 })?;
                 self.cache
-                    .store(request.identity, &event.message_id, &content, request.now)?;
+                    .store(request.identity, &event.message_id, &bytes, request.now)?;
                 run.cached += 1;
             }
         }
@@ -293,7 +321,19 @@ impl<'a> SyncEngine<'a> {
     /// The upstream identifier never leaves the data plane, so the event
     /// carries an opaque identifier that the mailbox state store maps back
     /// to the upstream one for the identity that owns it.
+    ///
+    /// The mapping is written once: an upstream identifier that already
+    /// has a public identifier keeps it, so a subscriber that held the
+    /// identifier from an earlier event can go on using it, and the
+    /// mapping table does not grow by one row for every observed change
+    /// to the same message.
     fn public_id(&self, identity: &str, upstream_id: &MessageId) -> QueueResult<String> {
+        if let Some(existing) =
+            self.mailbox
+                .lookup_public_id(identity, OpaqueKind::Message, upstream_id.as_str())?
+        {
+            return Ok(existing);
+        }
         let public_id = hex::encode(mail_storage::crypto::random_bytes(16)?);
         self.mailbox.put_opaque_id(&OpaqueId {
             identity: identity.to_owned(),
@@ -541,5 +581,245 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error, QueueError::FeatureDisabled(Feature::PersistentSync));
+    }
+
+    #[derive(Debug)]
+    struct FailingSource {
+        error: TransportError,
+    }
+
+    impl ChangeSource for FailingSource {
+        fn changes_since(
+            &mut self,
+            _mailbox: &MailboxRef,
+            _cursor: Option<&str>,
+        ) -> Result<ChangeSet, TransportError> {
+            Err(self.error.clone())
+        }
+
+        fn message(
+            &mut self,
+            _mailbox: &MailboxRef,
+            _id: &MessageId,
+        ) -> Result<UntrustedMessage, TransportError> {
+            Err(self.error.clone())
+        }
+    }
+
+    /// A4: a cache that is wired in is still not written when the
+    /// deployment did not opt in through the feature flag.
+    #[test]
+    fn a_cache_with_the_feature_flag_off_stores_nothing() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        // The cache itself is switched on; only the deployment flag is off.
+        let cache = cache("flag-off", true);
+        let engine = SyncEngine::new(
+            QueueFeatures::none().with_persistent_sync(true),
+            &store,
+            &cache,
+        );
+        let policy = hiding_policy();
+        let gate = PolicyGate::new(&policy);
+        let mut source = ScriptedSource {
+            changes: vec![mail_core::Change {
+                id: MessageId::new("m-1"),
+                kind: ChangeKind::Added,
+            }],
+            messages: vec![message("m-1", "an ordinary subject", "the body")],
+        };
+        let mut events = RecordingSink::default();
+        let mut notifications = RecordingNotifier::default();
+        let run = engine
+            .sync_once(
+                SyncRequest {
+                    identity: "alice@example.test",
+                    mailbox: &MailboxRef::new("INBOX"),
+                    owner: "worker",
+                    now: 100,
+                    ttl: 60,
+                },
+                &mut source,
+                &gate,
+                &mut events,
+                &mut notifications,
+            )
+            .unwrap();
+        assert_eq!(run.published, 1);
+        assert_eq!(
+            run.cached, 0,
+            "the message was cached although the encrypted cache is not opted in"
+        );
+        let message_id = &events.events[0].message_id;
+        assert_eq!(
+            cache.load("alice@example.test", message_id).unwrap(),
+            None,
+            "raw message content was persisted without the feature flag"
+        );
+    }
+
+    /// A5: what the cache keeps is a *sanitized* body — remote content
+    /// markup does not survive into the cached bytes.
+    #[test]
+    fn a_cached_body_is_sanitized() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let cache = cache("sanitized", true);
+        let engine = SyncEngine::new(
+            QueueFeatures::none()
+                .with_persistent_sync(true)
+                .with_encrypted_cache(true),
+            &store,
+            &cache,
+        );
+        let policy = hiding_policy();
+        let gate = PolicyGate::new(&policy);
+        let mut source = ScriptedSource {
+            changes: vec![mail_core::Change {
+                id: MessageId::new("m-1"),
+                kind: ChangeKind::Added,
+            }],
+            messages: vec![{
+                let mut message = message("m-1", "an ordinary subject", "the body");
+                message.html_body = Some(
+                    "<p>hello</p><script>alert('owned')</script>\
+                     <img src=\"http://tracker.example/pixel\">"
+                        .to_owned(),
+                );
+                message
+            }],
+        };
+        let mut events = RecordingSink::default();
+        let mut notifications = RecordingNotifier::default();
+        let run = engine
+            .sync_once(
+                SyncRequest {
+                    identity: "alice@example.test",
+                    mailbox: &MailboxRef::new("INBOX"),
+                    owner: "worker",
+                    now: 100,
+                    ttl: 60,
+                },
+                &mut source,
+                &gate,
+                &mut events,
+                &mut notifications,
+            )
+            .unwrap();
+        assert_eq!(run.cached, 1);
+        let message_id = &events.events[0].message_id;
+        let bytes = cache
+            .load("alice@example.test", message_id)
+            .unwrap()
+            .expect("the message is cached");
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(
+            !text.contains("tracker.example"),
+            "the cached copy keeps a remote-content reference: {text}"
+        );
+        assert!(
+            !text.contains("<script"),
+            "the cached copy keeps script markup: {text}"
+        );
+    }
+
+    /// A6: the same upstream message keeps one stable public identifier,
+    /// no matter how many times a change for it is observed.
+    #[test]
+    fn an_upstream_message_keeps_one_stable_public_id() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let cache = cache("stable-id", false);
+        let engine = SyncEngine::new(
+            QueueFeatures::none().with_persistent_sync(true),
+            &store,
+            &cache,
+        );
+        let policy = hiding_policy();
+        let gate = PolicyGate::new(&policy);
+        let mut source = ScriptedSource {
+            changes: vec![mail_core::Change {
+                id: MessageId::new("m-1"),
+                kind: ChangeKind::Added,
+            }],
+            messages: vec![message("m-1", "an ordinary subject", "the body")],
+        };
+        let mut events = RecordingSink::default();
+        let mut notifications = RecordingNotifier::default();
+        for now in [100, 160] {
+            engine
+                .sync_once(
+                    SyncRequest {
+                        identity: "alice@example.test",
+                        mailbox: &MailboxRef::new("INBOX"),
+                        owner: "worker",
+                        now,
+                        ttl: 60,
+                    },
+                    &mut source,
+                    &gate,
+                    &mut events,
+                    &mut notifications,
+                )
+                .unwrap();
+        }
+        assert_eq!(events.events.len(), 2);
+        assert_eq!(
+            events.events[0].message_id, events.events[1].message_id,
+            "the second observation of the same message minted a new public id"
+        );
+        // The mapping still resolves, in one direction only.
+        assert_eq!(
+            store
+                .lookup_opaque_id(
+                    "alice@example.test",
+                    OpaqueKind::Message,
+                    &events.events[0].message_id
+                )
+                .unwrap(),
+            Some("m-1".to_owned())
+        );
+    }
+
+    /// A9: the text a source failure carries is untrusted — a protocol
+    /// error may quote a message or an address — so the error reports a
+    /// bounded reason.
+    #[test]
+    fn a_source_failure_is_reported_without_the_upstream_text() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let cache = cache("bounded-source", false);
+        let engine = SyncEngine::new(
+            QueueFeatures::none().with_persistent_sync(true),
+            &store,
+            &cache,
+        );
+        let policy = hiding_policy();
+        let gate = PolicyGate::new(&policy);
+        let mut source = FailingSource {
+            error: TransportError::Protocol(
+                "cannot parse the response for alice@example.test: <bob@example.test> bad"
+                    .to_owned(),
+            ),
+        };
+        let mut events = RecordingSink::default();
+        let mut notifications = RecordingNotifier::default();
+        let error = engine
+            .sync_once(
+                SyncRequest {
+                    identity: "alice@example.test",
+                    mailbox: &MailboxRef::new("INBOX"),
+                    owner: "worker",
+                    now: 100,
+                    ttl: 60,
+                },
+                &mut source,
+                &gate,
+                &mut events,
+                &mut notifications,
+            )
+            .unwrap_err();
+        assert_eq!(error, QueueError::Upstream("upstream_protocol".to_owned()));
+        let text = error.to_string();
+        assert!(
+            !text.contains("alice@example.test: <bob@example.test>"),
+            "the error carries the upstream text: {text}"
+        );
     }
 }

@@ -451,7 +451,18 @@ fn builder_from(yaml: &str) -> SnapshotBuilder {
                         id: entry.get("id")?.as_str()?.to_owned(),
                         mailbox: entry.get("mailbox")?.as_str()?.to_owned(),
                         address: entry.get("address")?.as_str()?.to_owned(),
-                        isolation: crate::IsolationMode::Dedicated,
+                        // The isolation is the identity's own confidentiality
+                        // claim. It is read from the document instead of
+                        // assumed: a revocation must never upgrade the
+                        // remaining identities' isolation. An entry that does
+                        // not carry a usable mode keeps the weakest claim,
+                        // which is the one that promises nothing.
+                        isolation: entry
+                            .get("isolation")
+                            .and_then(|value| {
+                                serde_yaml::from_value::<crate::IsolationMode>(value.clone()).ok()
+                            })
+                            .unwrap_or(crate::IsolationMode::BestEffort),
                     })
                 })
                 .collect()

@@ -19,6 +19,10 @@
 
 use crate::error::StorageResult;
 
+/// Historical refresh-claim interval, retained for API compatibility.
+/// Expiry does not authorize takeover of an ambiguous external refresh.
+pub const REFRESH_CLAIM_TTL_SECONDS: u64 = 15 * 60;
+
 /// How healthy a connection is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -109,13 +113,33 @@ pub trait ProviderConnectionStore {
     /// generation and no other owner holds the claim of that generation, so
     /// a refresh happens once. A claim of an older generation is stale — the
     /// credential moved on — and does not stop the owner of the current
-    /// generation from claiming.
+    /// generation from claiming. An existing claim refuses all subsequent
+    /// claims, including those with the same owner name.
     fn claim_refresh(
         &self,
         connection_id: &str,
         generation: u64,
         owner: &str,
     ) -> StorageResult<bool>;
+    /// Claim the right to refresh, recording when the claim was acquired.
+    ///
+    /// The TTL is retained for compatibility but cannot authorize takeover:
+    /// a slow worker may still be rotating the credential at the provider.
+    /// An abandoned claim requires explicit recovery or reauthorization.
+    ///
+    /// The default delegates to [`Self::claim_refresh`], which carries no
+    /// time: a store that does not implement the clock keeps its own
+    /// behavior.
+    fn claim_refresh_at(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+        _now: u64,
+        _ttl: u64,
+    ) -> StorageResult<bool> {
+        self.claim_refresh(connection_id, generation, owner)
+    }
     /// Commit a refreshed credential.
     ///
     /// The commit succeeds only when the supplied owner still holds the

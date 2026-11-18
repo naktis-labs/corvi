@@ -255,6 +255,74 @@ fn a_suspended_provider_contributes_no_identity_to_its_gateway() {
     );
 }
 
+#[test]
+fn a_suspended_provider_is_not_reported_as_bound() {
+    let mut graph = ResourceGraph::new();
+    graph.insert_gateway(gateway("primary")).unwrap();
+    let mut suspended = provider("fastmail", Some("primary"));
+    suspended.spec.suspended = true;
+    graph.insert_provider(suspended).unwrap();
+
+    let error = graph
+        .resolve_provider_binding(&key("fastmail"))
+        .expect_err("a suspended provider is not actively bound");
+
+    assert_eq!(
+        error,
+        ReferenceError::SuspendedProvider {
+            provider: key("fastmail"),
+        }
+    );
+
+    let view = graph.gateway_view(&key("primary"));
+    assert!(
+        !view.providers.contains(&key("fastmail")),
+        "the view must not report a suspended provider as serving: {:?}",
+        view.providers
+    );
+}
+
+#[test]
+fn another_namespaces_problems_are_not_this_gateways_problems() {
+    let mut graph = ResourceGraph::new();
+    graph.insert_gateway(gateway("primary")).unwrap();
+    graph
+        .insert_provider(provider("fastmail", Some("primary")))
+        .unwrap();
+
+    // A dangling identity in a foreign namespace: its reference chain cannot
+    // be this gateway's business, and reporting it here would disclose
+    // another namespace's resource keys.
+    let mut foreign = identity("foreign-orphan", Some("ghost-mailbox"));
+    foreign.metadata = ObjectMeta::new("other-namespace", "foreign-orphan");
+    graph.insert_identity(foreign).unwrap();
+    // The same defect in this gateway's own namespace must still be reported.
+    graph
+        .insert_identity(identity("local-orphan", Some("ghost-mailbox")))
+        .unwrap();
+
+    let view = graph.gateway_view(&key("primary"));
+
+    let dangling: Vec<&ResourceKey> = view
+        .problems
+        .iter()
+        .filter_map(|problem| match problem {
+            ReferenceError::DanglingReference { target, .. } => Some(target),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        dangling.iter().any(|target| target.namespace == NS),
+        "the gateway's own dangling identity is still reported: {:?}",
+        view.problems
+    );
+    assert!(
+        dangling.iter().all(|target| target.namespace == NS),
+        "problems must stay inside the gateway's own namespace: {:?}",
+        view.problems
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Behaviour 4: one owner per workload, revocation before reparenting, and no
 // cascade deletion.
@@ -350,7 +418,7 @@ fn reparenting_revokes_the_old_gateway_before_publishing_the_new_one() {
 
     let plan = &plans[0];
     plan.validate().expect("the plan must be well ordered");
-    assert_eq!(plan.source(), &key("primary"));
+    assert_eq!(plan.source(), Some(&key("primary")));
     assert_eq!(plan.target(), &Some(key("secondary")));
 
     let steps = plan.steps();
@@ -377,7 +445,7 @@ fn reparenting_revokes_the_old_gateway_before_publishing_the_new_one() {
 #[test]
 fn a_reparenting_plan_that_publishes_before_revoking_is_rejected() {
     let plan = ReparentPlan::from_steps(
-        key("primary"),
+        Some(key("primary")),
         Some(key("secondary")),
         vec![
             TransitionStep::PublishGatewayAccess {
@@ -429,6 +497,111 @@ fn detaching_a_provider_revokes_without_publishing() {
             .all(|step| !matches!(step, TransitionStep::PublishGatewayAccess { .. })),
         "a detached identity is never published: {:?}",
         plan.steps()
+    );
+}
+
+#[test]
+fn deleting_an_identity_revokes_its_former_gateway() {
+    let previous = chain("primary", "fastmail");
+
+    // The identity is deleted: it is present in `previous` and absent from
+    // `current`. No identity object remains to resolve, but the old gateway
+    // must still lose the access it held.
+    let mut current = ResourceGraph::new();
+    current.insert_gateway(gateway("primary")).unwrap();
+    current
+        .insert_provider(provider("fastmail", Some("primary")))
+        .unwrap();
+    current
+        .insert_mailbox(mailbox("personal", Some("fastmail")))
+        .unwrap();
+
+    let plans = detect_reparenting(&previous, &current);
+    assert_eq!(
+        plans.len(),
+        1,
+        "a deleted identity must produce a revocation plan: {plans:?}"
+    );
+
+    let plan = &plans[0];
+    plan.validate().expect("the deletion plan is well ordered");
+    assert_eq!(plan.source(), Some(&key("primary")));
+    assert_eq!(plan.target(), &None);
+    assert!(
+        plan.steps().iter().any(|step| matches!(step,
+            TransitionStep::RevokeGatewayAccess { gateway, identity }
+            if gateway == &key("primary") && identity == &key("me")
+        )),
+        "the old gateway must be revoked: {:?}",
+        plan.steps()
+    );
+    assert!(
+        plan.steps()
+            .iter()
+            .all(|step| !matches!(step, TransitionStep::PublishGatewayAccess { .. })),
+        "a deleted identity is never published: {:?}",
+        plan.steps()
+    );
+}
+
+#[test]
+fn attaching_an_unbound_identity_to_a_gateway_validates() {
+    let mut previous = ResourceGraph::new();
+    previous.insert_gateway(gateway("primary")).unwrap();
+    previous
+        .insert_provider(provider("fastmail", None))
+        .unwrap();
+    previous
+        .insert_mailbox(mailbox("personal", Some("fastmail")))
+        .unwrap();
+    previous
+        .insert_identity(identity("me", Some("personal")))
+        .unwrap();
+    let current = chain("primary", "fastmail");
+
+    let plans = detect_reparenting(&previous, &current);
+    assert_eq!(plans.len(), 1, "one identity gained a gateway: {plans:?}");
+
+    let plan = &plans[0];
+    assert_eq!(
+        plan.source(),
+        None,
+        "an attach has no gateway that loses access"
+    );
+    plan.validate()
+        .expect("an attach publishes access the identity never had, so it validates");
+    assert_eq!(plan.target(), &Some(key("primary")));
+}
+
+#[test]
+fn a_move_between_the_same_gateway_is_still_refused() {
+    let plan = ReparentPlan::from_steps(
+        Some(key("primary")),
+        Some(key("primary")),
+        vec![
+            TransitionStep::RevokeGatewayAccess {
+                gateway: key("primary"),
+                identity: key("me"),
+            },
+            TransitionStep::InvalidateDerivedState {
+                identity: key("me"),
+            },
+            TransitionStep::PublishGatewayAccess {
+                gateway: key("primary"),
+                identity: key("me"),
+            },
+        ],
+    );
+
+    let error = plan
+        .validate()
+        .expect_err("a same-gateway move is never a valid plan");
+
+    assert_eq!(
+        error,
+        mail_operator::ownership::ReparentingError::SameGateway {
+            gateway: key("primary"),
+        }
     );
 }
 

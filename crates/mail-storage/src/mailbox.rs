@@ -111,6 +111,25 @@ pub trait MailboxStateStore {
         kind: OpaqueKind,
         public_id: &str,
     ) -> StorageResult<Option<String>>;
+    /// Resolve the public identifier an upstream identifier already has
+    /// for one identity.
+    ///
+    /// This is the reverse of [`Self::lookup_opaque_id`]: the caller holds
+    /// the upstream identifier and asks for the stable public handle that
+    /// was minted for it, so the same upstream object keeps one public
+    /// identifier instead of collecting a new one on every observation.
+    ///
+    /// The default finds nothing, which sends the caller down the
+    /// mint-a-new-identifier path: a store that cannot answer in reverse
+    /// keeps working, it only never reuses an identifier.
+    fn lookup_public_id(
+        &self,
+        _identity: &str,
+        _kind: OpaqueKind,
+        _upstream_id: &str,
+    ) -> StorageResult<Option<String>> {
+        Ok(None)
+    }
     /// Acquire a lease, fencing off any earlier owner.
     fn acquire_lease(
         &self,

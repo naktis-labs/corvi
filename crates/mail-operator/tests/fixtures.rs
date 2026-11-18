@@ -374,6 +374,47 @@ fn the_rendered_workload_never_owns_a_claim() {
             | mail_operator::workload::VolumeSource::Secret { .. } => {}
         }
     }
+
+    // Every declared volume must actually be mounted: a volume without a
+    // mount is data that silently lands on the read-only root filesystem.
+    let mounts = &stateful_set.spec.template.spec.containers[0].volume_mounts;
+    for volume in volumes {
+        assert!(
+            mounts.iter().any(|mount| mount.name == volume.name),
+            "volume {} is declared but never mounted: {mounts:?}",
+            volume.name
+        );
+    }
+    let state = mounts
+        .iter()
+        .find(|mount| mount.name == "state")
+        .expect("the state volume is mounted");
+    assert_eq!(state.mount_path, "/var/lib/corvi");
+    assert!(!state.read_only, "SQLite state must be writable");
+}
+
+#[test]
+fn the_rendered_fixtures_are_plain_kubernetes_yaml() {
+    for name in ["corvi-gateway-primary.yaml", "corvi-gateway-sqlite.yaml"] {
+        let text = read(&format!("{DEPLOY}/rendered/{name}"));
+        for tag in [
+            "!configMap",
+            "!emptyDir",
+            "!persistentVolumeClaim",
+            "!secret",
+        ] {
+            assert!(
+                !text.contains(tag),
+                "{name} must not carry the serde {tag} tag; volumes are plain k8s YAML"
+            );
+        }
+    }
+
+    let sqlite = read(&format!("{DEPLOY}/rendered/corvi-gateway-sqlite.yaml"));
+    assert!(
+        sqlite.contains("persistentVolumeClaim:"),
+        "the sqlite fixture must declare its claim as real Kubernetes YAML"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +470,7 @@ fn the_operator_never_trusts_a_policy_it_derived_itself() {
         network: vec![policy],
     };
 
-    let error = mail_operator::workload::check_policy_trust(&expected, &observed)
+    let error = mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
         .expect_err("a policy the operator derived is not a boundary");
 
     assert_eq!(

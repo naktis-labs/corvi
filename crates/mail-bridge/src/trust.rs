@@ -85,6 +85,12 @@ pub struct ApprovedBridge {
     pub exposure: EndpointExposure,
     /// The approved secret bindings.
     pub secret_inputs: Vec<crate::descriptor::SecretInput>,
+    /// The writable paths the approval grants.
+    ///
+    /// The request was validated against the mandatory profile before it
+    /// reached this list, so the approval states exactly what was approved
+    /// instead of silently dropping the request (ADR-0006 section 3).
+    pub writable_paths: Vec<String>,
 }
 
 /// Why a descriptor was refused.
@@ -228,5 +234,6 @@ pub fn authorize(
         placement: descriptor.runtime.placement,
         exposure: descriptor.runtime.exposure,
         secret_inputs: descriptor.secret_inputs.clone(),
+        writable_paths: descriptor.runtime.security.writable_paths.clone(),
     })
 }

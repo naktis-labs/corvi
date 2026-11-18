@@ -63,7 +63,10 @@ pub struct AuthorizationRequest {
 }
 
 /// The answer of the authorization endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The code is a bearer credential until it is exchanged, so the `Debug`
+/// of the answer is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizationResponse {
     /// The authorization code.
     pub code: String,
@@ -79,8 +82,24 @@ pub struct AuthorizationResponse {
     pub grant_ids: Vec<String>,
 }
 
+impl std::fmt::Debug for AuthorizationResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthorizationResponse")
+            .field("code", &"[redacted]")
+            .field("state", &self.state)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("issuer", &self.issuer)
+            .field("expires_at", &self.expires_at)
+            .field("grant_ids", &self.grant_ids)
+            .finish()
+    }
+}
+
 /// A token request, as the token endpoint receives it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The request carries every credential the exchange uses, so its `Debug`
+/// is manual: printing a request must never print a secret.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenRequest {
     /// The grant type the client asks for.
     pub grant_type: String,
@@ -100,8 +119,31 @@ pub struct TokenRequest {
     pub resource: Option<String>,
 }
 
+impl std::fmt::Debug for TokenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("code", &self.code.as_ref().map(|_| "[redacted]"))
+            .field(
+                "code_verifier",
+                &self.code_verifier.as_ref().map(|_| "[redacted]"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("resource", &self.resource)
+            .finish()
+    }
+}
+
 /// The answer of the token endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The answer carries the tokens themselves, so its `Debug` is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenResponse {
     /// The access token.
     pub access_token: String,
@@ -119,8 +161,25 @@ pub struct TokenResponse {
     pub issuer: String,
 }
 
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[redacted]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("scope", &self.scope)
+            .field("authorization_details", &self.authorization_details)
+            .field("issuer", &self.issuer)
+            .finish()
+    }
+}
+
 /// A revocation request, as the revocation endpoint receives it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RevocationRequest {
     /// The client that asks.
     pub client_id: String,
@@ -128,6 +187,19 @@ pub struct RevocationRequest {
     pub client_secret: Option<String>,
     /// The token to revoke.
     pub token: String,
+}
+
+impl std::fmt::Debug for RevocationRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevocationRequest")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// The bindings an authorization code carries.
@@ -351,36 +423,53 @@ impl<'a> Issuer<'a> {
     ///
     /// An unknown token is not an error: the endpoint answers the same way
     /// for a token that exists and one that does not, so it cannot be used
-    /// to probe which tokens are real.
+    /// to probe which tokens are real. A token that exists but belongs to
+    /// another client is answered the same way, and changes nothing — a
+    /// client may only end the credentials that were issued to it.
     pub fn revoke(&self, request: &RevocationRequest, now: u64) -> Result<(), AuthError> {
         let client = self
             .clients
             .authenticate(&request.client_id, request.client_secret.as_deref())?;
         if request.token.starts_with("crt1.") {
             if let Ok(claims) = tokens::parse_refresh_token(self.key, &request.token) {
-                for grant_id in &claims.grant_ids {
-                    if let Some(grant) = self.state.get_grant(grant_id)? {
-                        if grant.client_id != client.record.client_id {
-                            return Err(AuthError::InvalidClient(
-                                "the token belongs to another client".to_owned(),
-                            ));
-                        }
-                    }
+                // The family belongs to the client its grants name. A
+                // foreign client's request is a silent no-op: an error
+                // here would confirm that the token is real.
+                let foreign = claims
+                    .grant_ids
+                    .iter()
+                    .filter_map(|grant_id| self.state.get_grant(grant_id).transpose())
+                    .collect::<Result<Vec<_>, _>>()?
+                    .iter()
+                    .any(|grant| grant.client_id != client.record.client_id);
+                if !foreign {
+                    self.state.revoke_refresh_family(&claims.family_id, now)?;
                 }
-                self.state.revoke_refresh_family(&claims.family_id, now)?;
             }
             return Ok(());
         }
-        let hash = tokens::token_hash(&request.token);
-        if let Some(record) = self.state.lookup_access_token(&hash, now)? {
-            let mut record = record;
-            record.revoked_at = Some(now);
-            self.state.put_access_token(&record)?;
+        // An access token names the client it was minted for, and that
+        // name is bound by the token's own MAC.
+        if let Ok(claims) = tokens::parse_access_token(self.key, &request.token) {
+            if claims.client_id != client.record.client_id {
+                return Ok(());
+            }
+            let hash = tokens::token_hash(&request.token);
+            if let Some(record) = self.state.lookup_access_token(&hash, now)? {
+                let mut record = record;
+                record.revoked_at = Some(now);
+                self.state.put_access_token(&record)?;
+            }
         }
         Ok(())
     }
 
     /// Exchange an authorization code for tokens.
+    ///
+    /// Everything that can be checked without writing is checked before
+    /// the code is consumed: the code is single use for a successful
+    /// exchange, not for a single attempt, so a wrong verifier or a wrong
+    /// issuer never burns the code of a client that holds the right one.
     fn exchange_code(
         &self,
         client: &RegisteredClient,
@@ -392,27 +481,6 @@ impl<'a> Issuer<'a> {
         })?;
         let payload = parse_code(code)?;
         discovery::check_issuer(self.config, &payload.issuer)?;
-        let record = self
-            .state
-            .exchange_auth_code(&tokens::token_hash(code), now)
-            .map_err(|error| match error {
-                AuthError::InvalidGrant(reason) => AuthError::InvalidGrant(reason),
-                other => other,
-            })?;
-        if record.client_id != client.record.client_id {
-            return Err(AuthError::InvalidGrant(
-                "the authorization code was issued to another client".to_owned(),
-            ));
-        }
-        let redirect_uri = request
-            .redirect_uri
-            .as_ref()
-            .ok_or_else(|| AuthError::InvalidRequest("the redirect uri is missing".to_owned()))?;
-        if &record.redirect_uri != redirect_uri {
-            return Err(AuthError::InvalidRedirectUri(
-                "the redirect uri does not match the one the code was issued for".to_owned(),
-            ));
-        }
         let verifier = request
             .code_verifier
             .as_ref()
@@ -424,6 +492,10 @@ impl<'a> Issuer<'a> {
             },
             verifier,
         )?;
+        let redirect_uri = request
+            .redirect_uri
+            .as_ref()
+            .ok_or_else(|| AuthError::InvalidRequest("the redirect uri is missing".to_owned()))?;
         if let Some(resource) = &request.resource {
             if resource != &self.config.resource {
                 return Err(AuthError::InvalidResource(
@@ -433,6 +505,12 @@ impl<'a> Issuer<'a> {
         }
         let (grants, scopes, principal) =
             self.load_grants(&payload.grant_ids, client, &payload.scopes)?;
+        self.state.exchange_bound_auth_code(
+            &tokens::token_hash(code),
+            &client.record.client_id,
+            redirect_uri,
+            now,
+        )?;
         self.issue(
             &client.record.client_id,
             &grants,
@@ -444,6 +522,12 @@ impl<'a> Issuer<'a> {
     }
 
     /// Refresh an access token.
+    ///
+    /// The client↔family binding is checked before anything is written: a
+    /// client that presents another client's refresh token changes nothing,
+    /// because a refusal that leaves a rotation behind would destroy the
+    /// victim's family. Only a request that belongs to the client rotates
+    /// the family, and an old generation is still a replay that revokes it.
     fn refresh(
         &self,
         client: &RegisteredClient,
@@ -455,6 +539,11 @@ impl<'a> Issuer<'a> {
             .as_ref()
             .ok_or_else(|| AuthError::InvalidRequest("the refresh token is missing".to_owned()))?;
         let claims = tokens::parse_refresh_token(self.key, presented)?;
+        // The grants the token names are loaded first. The load is
+        // read-only and it refuses a token that belongs to another client,
+        // so a cross-client request stops here with the family untouched.
+        let (grants, scopes, principal) =
+            self.load_grants(&claims.grant_ids, client, &claims.scopes)?;
         let next_generation = claims.generation + 1;
         let next_token = tokens::mint_refresh_token(
             self.key,
@@ -481,8 +570,6 @@ impl<'a> Issuer<'a> {
                 ));
             }
         }
-        let (grants, scopes, principal) =
-            self.load_grants(&claims.grant_ids, client, &claims.scopes)?;
         self.issue(
             &client.record.client_id,
             &grants,

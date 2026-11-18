@@ -23,10 +23,7 @@
 
 use std::sync::Arc;
 
-use mail_storage::{
-    ConnectionStatus, ProviderConnection, ProviderConnectionStore, RefreshState, SecretAad,
-    SecretRef, SecretStore,
-};
+use mail_storage::{ProviderConnectionStore, SecretAad, SecretRef, SecretStore};
 
 use crate::clock::Clock;
 use crate::error::UpstreamOAuthError;
@@ -120,7 +117,7 @@ pub struct TokenBroker {
     registry: Arc<ProviderRegistry>,
     authorizer: Arc<dyn OnboardingAuthorizer>,
     client_secrets: Arc<dyn ClientSecretResolver>,
-    escrow: Arc<DeliveryEscrow>,
+    _escrow: Arc<DeliveryEscrow>,
     clock: Arc<dyn Clock>,
 }
 
@@ -150,94 +147,23 @@ impl TokenBroker {
             registry,
             authorizer,
             client_secrets,
-            escrow,
+            _escrow: escrow,
             clock,
         }
     }
 
-    /// Take a delivered credential into the secret store.
-    ///
-    /// This is the separate, separately authorized interface the onboarding
-    /// path hands the credential to. The onboarding administrator cannot
-    /// call it: the action belongs to the data plane's own role.
+    /// Deliveries are disabled until shared durable connection-level coordination
+    /// can be enforced across all writers. Tickets and credentials are preserved.
     pub fn deliver(
         &self,
-        ticket: &str,
+        _ticket: &str,
         principal: &OnboardingPrincipal,
     ) -> Result<DeliveryReceipt, UpstreamOAuthError> {
         self.authorizer
             .authorize(principal, OnboardingAction::DeliverScopedSecret)?;
-        let now = self.clock.now();
-        let credential =
-            self.escrow
-                .claim(ticket, now)?
-                .ok_or_else(|| UpstreamOAuthError::InvalidRequest {
-                    reason: "the delivery ticket is unknown or was already used".to_owned(),
-                })?;
-
-        let aad = refresh_secret_aad(
-            &credential.provider,
-            &credential.connection_id,
-            &credential.identity,
-        );
-        let secret_ref = match &credential.tokens.refresh_token {
-            Some(refresh_token) => self
-                .secrets
-                .put(
-                    REFRESH_SECRET_OWNER,
-                    &credential.connection_id,
-                    refresh_token.as_bytes(),
-                    &aad,
-                )
-                .map_err(|error| UpstreamOAuthError::Storage {
-                    reason: error.to_string(),
-                })?,
-            None => {
-                return Err(UpstreamOAuthError::NeedsReauthorization {
-                    connection_id: credential.connection_id,
-                    reason: "the provider issued no refresh credential".to_owned(),
-                });
-            }
-        };
-
-        let connection = ProviderConnection {
-            connection_id: credential.connection_id.clone(),
-            provider: credential.provider.clone(),
-            account_ref: credential.expected_account.clone(),
-            identity: credential.identity.clone(),
-            capabilities: credential
-                .capabilities
-                .iter()
-                .map(|capability| capability.as_str().to_owned())
-                .collect(),
-            status: ConnectionStatus::Active,
-            generation: 0,
-            updated_at: now,
-        };
-        self.connections
-            .put_connection(&connection)
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?;
-        let secret_ref_text = secret_ref_string(&secret_ref);
-        self.connections
-            .put_refresh_state(&RefreshState {
-                connection_id: credential.connection_id.clone(),
-                generation: 0,
-                secret_ref: secret_ref_text.clone(),
-                expires_at: credential.tokens.expires_at.unwrap_or_default(),
-                needs_reauthorization: false,
-            })
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?;
-
-        Ok(DeliveryReceipt {
-            connection_id: credential.connection_id,
-            provider: credential.provider,
-            secret_ref: secret_ref_text,
-            expires_at: credential.tokens.expires_at,
-            generation: 0,
+        Err(UpstreamOAuthError::Storage {
+            reason: "delivery unavailable: shared durable connection coordination is not supported"
+                .to_owned(),
         })
     }
 
@@ -426,47 +352,11 @@ impl TokenBroker {
         })
     }
 
-    /// Check that a connection's credential is recoverable.
-    ///
-    /// A rotation that was interrupted between writing the new credential
-    /// and committing it leaves the store with a credential the refresh
-    /// state does not name. That is unrecoverable: the provider may have
-    /// invalidated the old credential already, and the new one was never
-    /// committed, so the connection is marked as needing reauthorization
-    /// instead of quietly using either of them.
-    pub fn recover(&self, connection_id: &str) -> Result<RecoveryOutcome, UpstreamOAuthError> {
-        let now = self.clock.now();
-        let Some(state) = self
-            .connections
-            .get_refresh_state(connection_id)
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?
-        else {
-            return Ok(RecoveryOutcome::NoCredential);
-        };
-        if state.needs_reauthorization {
-            return Ok(RecoveryOutcome::NeedsReauthorization {
-                reason: "the connection is marked as needing reauthorization".to_owned(),
-            });
-        }
-        let Some(reference) = self.stored_reference(connection_id)? else {
-            self.mark_needs_reauthorization(connection_id, now)?;
-            return Ok(RecoveryOutcome::NeedsReauthorization {
-                reason: "the refresh credential is missing".to_owned(),
-            });
-        };
-        if let Some(committed) = committed_version(&state.secret_ref)
-            && reference.version > committed
-        {
-            self.mark_needs_reauthorization(connection_id, now)?;
-            return Ok(RecoveryOutcome::NeedsReauthorization {
-                reason: "a rotation was interrupted before it was committed".to_owned(),
-            });
-        }
-        Ok(RecoveryOutcome::Recoverable {
-            generation: state.generation,
-            secret_ref: state.secret_ref,
+    /// Recovery cannot establish exclusivity with an active or abandoned refresh.
+    /// Refuse to assert recoverability without mutating the connection or claim.
+    pub fn recover(&self, _connection_id: &str) -> Result<RecoveryOutcome, UpstreamOAuthError> {
+        Ok(RecoveryOutcome::NeedsReauthorization {
+            reason: "refresh recovery requires atomic coordination; reconciliation or reauthorization is required".to_owned(),
         })
     }
 

@@ -211,6 +211,28 @@ fn only_the_loopback_interface_may_use_http() {
 }
 
 #[test]
+fn a_loopback_uri_with_userinfo_is_not_loopback() {
+    // The userinfo of a URI is not its host: a URI that *names* the
+    // loopback in its userinfo and sends the browser elsewhere is not a
+    // loopback callback.
+    for uri in [
+        "http://127.0.0.1:80@evil.example/callback",
+        "http://127.0.0.1@evil.example/callback",
+        "http://user:127.0.0.1@evil.example/callback",
+        "http://127.0.0.1:80@[::1]/callback",
+    ] {
+        assert!(
+            !is_loopback_uri(uri),
+            "the userinfo must not make {uri:?} a loopback uri"
+        );
+    }
+    assert!(
+        is_loopback_uri("http://[::1]:8400/callback"),
+        "a real loopback uri still is one"
+    );
+}
+
+#[test]
 fn an_unconfigured_provider_says_what_is_missing() {
     let registry = ProviderRegistry::builtin();
     let fastmail = registry.get("fastmail").expect("fastmail is known").clone();

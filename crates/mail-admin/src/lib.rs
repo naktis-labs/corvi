@@ -6,6 +6,31 @@
 //! shape of a bounded request payload and the identity of the peer on the
 //! other side of the connection.
 //!
+//! # Crate boundary
+//!
+//! This crate holds two related but distinct surfaces, and the distinction is
+//! load-bearing:
+//!
+//! * **The provider vocabulary** (everything outside [`publication`]): the
+//!   operations, protocols, statuses, deadlines, peer identity and bounded
+//!   payload of the provider management contract. This is what
+//!   `provider-migadu` and every third-party provider plugin link.
+//! * **The configuration publication surface** ([`publication`]): the
+//!   snapshot lifecycle of the control plane's configuration service.
+//!   Configuration is *not* part of the provider surface: on the wire the two
+//!   live in separate proto packages (`corvi.provider.v1` and
+//!   `corvi.config.v1`), and a provider plugin can never publish
+//!   configuration.
+//!
+//! The publication surface is deliberately not re-exported at the crate root:
+//! a provider adapter only ever names the vocabulary, and code that publishes
+//! configuration goes through [`publication`] explicitly. What the module
+//! path does **not** change is linkage: because both surfaces live in this
+//! one crate, a plugin that links the vocabulary still links the publication
+//! code. Moving [`publication`] into its own crate is the remaining
+//! structural step; until then, the proto package separation and this module
+//! path are the boundary.
+//!
 //! Three rules shape the types here.
 //!
 //! * **Nothing is implied.** A capability is advertised or it is not. A
@@ -37,8 +62,6 @@ pub const MAX_SNAPSHOT_BYTES: usize = 1_048_576;
 pub const MAX_EXECUTE_PAYLOAD_BYTES: usize = 1_048_576;
 
 pub mod publication;
-
-pub use publication::{Ack, Snapshot, SnapshotStore};
 
 /// The provider management operations this contract defines.
 ///
@@ -607,9 +630,14 @@ pub struct Deadline {
 
 impl Deadline {
     /// A deadline that expires after the given duration.
+    ///
+    /// A duration beyond the platform clock's horizon saturates to the
+    /// farthest representable deadline instead of overflowing: a caller that
+    /// hands over an absurd budget gets "as long as this clock can express",
+    /// never a panic on the request path.
     pub fn after(duration: Duration) -> Self {
         Self {
-            at: Instant::now() + duration,
+            at: saturating_instant(Instant::now(), duration),
         }
     }
 
@@ -622,6 +650,27 @@ impl Deadline {
     pub fn expired(&self) -> bool {
         self.remaining().is_none()
     }
+}
+
+/// `now + duration`, saturating at the farthest representable instant.
+fn saturating_instant(now: Instant, duration: Duration) -> Instant {
+    if let Some(at) = now.checked_add(duration) {
+        return at;
+    }
+    // Binary-search the longest duration this clock can still represent from
+    // `now`. A handful of iterations of a checked add is cheaper and far
+    // clearer than any platform-specific clock constant.
+    let mut fits = Duration::ZERO;
+    let mut overflows = duration;
+    while overflows - fits > Duration::from_nanos(1) {
+        let mid = fits + (overflows - fits) / 2;
+        if now.checked_add(mid).is_some() {
+            fits = mid;
+        } else {
+            overflows = mid;
+        }
+    }
+    now + fits
 }
 
 /// Transport authentication contract. The implementation must verify peer identity, not only TLS.

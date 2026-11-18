@@ -179,9 +179,20 @@ pub fn error_response(error: &str) -> serde_json::Value {
 }
 
 /// A client secret resolver that answers from a table.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MapClientSecrets {
     secrets: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for MapClientSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MapClientSecrets")
+            .field(
+                "secrets",
+                &format_args!("[{} redacted]", self.secrets.len()),
+            )
+            .finish()
+    }
 }
 
 impl MapClientSecrets {
@@ -204,5 +215,185 @@ impl ClientSecretResolver for MapClientSecrets {
                 reason: "the client secret reference is not configured".to_owned(),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod debug_redaction {
+    use super::*;
+
+    #[test]
+    fn the_map_client_secrets_fixture_prints_no_secret() {
+        let resolver = MapClientSecrets::new().with(
+            "secret://provider/client-secret",
+            "the-client-secret-SECRET",
+        );
+        let printed = format!("{resolver:?}");
+        assert!(
+            !printed.contains("the-client-secret-SECRET"),
+            "a fixture that prints its secrets teaches the pattern: {printed}"
+        );
+    }
+}
+
+/// A secret store whose writes fail, for the delivery failure windows.
+#[derive(Debug, Default)]
+pub struct FailingSecretStore;
+
+impl mail_storage::SecretStore for FailingSecretStore {
+    fn put(
+        &self,
+        _owner: &str,
+        _name: &str,
+        _plaintext: &[u8],
+        _aad: &mail_storage::SecretAad,
+    ) -> mail_storage::StorageResult<mail_storage::SecretRef> {
+        Err(mail_storage::StorageError::Backend(
+            "the secret store is down".to_owned(),
+        ))
+    }
+
+    fn get(
+        &self,
+        _reference: &mail_storage::SecretRef,
+        _aad: &mail_storage::SecretAad,
+    ) -> mail_storage::StorageResult<Option<Vec<u8>>> {
+        Err(mail_storage::StorageError::Backend(
+            "the secret store is down".to_owned(),
+        ))
+    }
+
+    fn rotate(
+        &self,
+        _reference: &mail_storage::SecretRef,
+        _plaintext: &[u8],
+        _aad: &mail_storage::SecretAad,
+    ) -> mail_storage::StorageResult<mail_storage::SecretRef> {
+        Err(mail_storage::StorageError::Backend(
+            "the secret store is down".to_owned(),
+        ))
+    }
+
+    fn delete(&self, _reference: &mail_storage::SecretRef) -> mail_storage::StorageResult<bool> {
+        Err(mail_storage::StorageError::Backend(
+            "the secret store is down".to_owned(),
+        ))
+    }
+
+    fn list(&self, _owner: &str) -> mail_storage::StorageResult<Vec<mail_storage::SecretRef>> {
+        Err(mail_storage::StorageError::Backend(
+            "the secret store is down".to_owned(),
+        ))
+    }
+}
+
+/// A connection store whose refresh-state write fails, for the delivery
+/// failure window between the two writes of a delivery: the connection is
+/// announced Active before the state that makes it usable exists.
+pub struct FailingConnectionStore {
+    inner: Arc<dyn mail_storage::ProviderConnectionStore + Send + Sync>,
+}
+
+impl std::fmt::Debug for FailingConnectionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailingConnectionStore")
+            .finish_non_exhaustive()
+    }
+}
+
+impl FailingConnectionStore {
+    /// A store that delegates everything but the refresh-state write.
+    pub fn new(inner: Arc<dyn mail_storage::ProviderConnectionStore + Send + Sync>) -> Self {
+        Self { inner }
+    }
+}
+impl mail_storage::ProviderConnectionStore for FailingConnectionStore {
+    fn put_connection(
+        &self,
+        connection: &mail_storage::ProviderConnection,
+    ) -> mail_storage::StorageResult<()> {
+        self.inner.put_connection(connection)
+    }
+
+    fn get_connection(
+        &self,
+        connection_id: &str,
+    ) -> mail_storage::StorageResult<Option<mail_storage::ProviderConnection>> {
+        self.inner.get_connection(connection_id)
+    }
+
+    fn list_connections(
+        &self,
+        identity: &str,
+    ) -> mail_storage::StorageResult<Vec<mail_storage::ProviderConnection>> {
+        self.inner.list_connections(identity)
+    }
+
+    fn put_refresh_state(
+        &self,
+        _state: &mail_storage::RefreshState,
+    ) -> mail_storage::StorageResult<()> {
+        Err(mail_storage::StorageError::Backend(
+            "the refresh state cannot be written".to_owned(),
+        ))
+    }
+
+    fn get_refresh_state(
+        &self,
+        connection_id: &str,
+    ) -> mail_storage::StorageResult<Option<mail_storage::RefreshState>> {
+        self.inner.get_refresh_state(connection_id)
+    }
+
+    fn claim_refresh(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+    ) -> mail_storage::StorageResult<bool> {
+        self.inner.claim_refresh(connection_id, generation, owner)
+    }
+
+    fn claim_refresh_at(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+        now: u64,
+        ttl: u64,
+    ) -> mail_storage::StorageResult<bool> {
+        self.inner
+            .claim_refresh_at(connection_id, generation, owner, now, ttl)
+    }
+
+    fn complete_refresh(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+        secret_ref: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> mail_storage::StorageResult<bool> {
+        self.inner.complete_refresh(
+            connection_id,
+            generation,
+            owner,
+            secret_ref,
+            expires_at,
+            now,
+        )
+    }
+
+    fn mark_needs_reauthorization(
+        &self,
+        connection_id: &str,
+        now: u64,
+    ) -> mail_storage::StorageResult<bool> {
+        self.inner.mark_needs_reauthorization(connection_id, now)
+    }
+
+    fn disconnect(&self, connection_id: &str, now: u64) -> mail_storage::StorageResult<bool> {
+        self.inner.disconnect(connection_id, now)
     }
 }

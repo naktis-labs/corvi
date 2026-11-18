@@ -308,6 +308,13 @@ impl ResourceGraph {
             }
         }
         for identity_key in self.identities.keys() {
+            // Only this gateway's own namespace is its business. An identity
+            // in another namespace can never be bound here (references are
+            // same-namespace by contract), and reporting its resolution
+            // failures would disclose another namespace's resource keys.
+            if identity_key.namespace != gateway.namespace {
+                continue;
+            }
             match self.resolve_identity(identity_key) {
                 Ok(resolved) => {
                     if let ProviderBinding::Bound { gateway: bound } = &resolved.binding
@@ -332,6 +339,11 @@ impl ResourceGraph {
         };
         if provider.spec.role == ProviderRole::ManagementOnly {
             return Err(ReferenceError::ManagementOnlyProviderBound {
+                provider: ResourceKey::new(&provider.metadata.namespace, &provider.metadata.name),
+            });
+        }
+        if provider.spec.suspended {
+            return Err(ReferenceError::SuspendedProvider {
                 provider: ResourceKey::new(&provider.metadata.namespace, &provider.metadata.name),
             });
         }
@@ -577,10 +589,11 @@ impl std::error::Error for ReparentingError {}
 ///
 /// Reparenting is authorization-sensitive: the old gateway loses access
 /// **before** the new gateway gains it, so an identity is never visible
-/// through two gateways at once.
+/// through two gateways at once. A plan that *attaches* an identity that had
+/// no gateway records no source: there is no earlier access to revoke.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReparentPlan {
-    source: ResourceKey,
+    source: Option<ResourceKey>,
     target: Option<ResourceKey>,
     steps: Vec<TransitionStep>,
 }
@@ -609,13 +622,17 @@ impl ReparentPlan {
             }
         }
         Self {
-            source,
+            source: Some(source),
             target,
             steps,
         }
     }
 
     /// Build the plan that publishes identities that had no gateway.
+    ///
+    /// An attach is not a move: the identities were never served by a
+    /// gateway, so there is no source to record and no access to revoke
+    /// before publishing.
     pub fn attach(target: ResourceKey, identities: &[ResourceKey]) -> Self {
         let mut steps = Vec::new();
         for identity in identities {
@@ -628,7 +645,7 @@ impl ReparentPlan {
             });
         }
         Self {
-            source: target.clone(),
+            source: None,
             target: Some(target),
             steps,
         }
@@ -636,7 +653,7 @@ impl ReparentPlan {
 
     /// Build a plan from explicit steps.
     pub fn from_steps(
-        source: ResourceKey,
+        source: Option<ResourceKey>,
         target: Option<ResourceKey>,
         steps: Vec<TransitionStep>,
     ) -> Self {
@@ -647,9 +664,9 @@ impl ReparentPlan {
         }
     }
 
-    /// The gateway that loses the access.
-    pub fn source(&self) -> &ResourceKey {
-        &self.source
+    /// The gateway that loses the access, if the identities had one.
+    pub fn source(&self) -> Option<&ResourceKey> {
+        self.source.as_ref()
     }
 
     /// The gateway that gains the access, if any.
@@ -664,25 +681,32 @@ impl ReparentPlan {
 
     /// Check that the plan never overlaps access.
     pub fn validate(&self) -> Result<(), ReparentingError> {
-        if self.target.as_ref() == Some(&self.source) {
+        if let (Some(source), Some(target)) = (&self.source, &self.target)
+            && source == target
+        {
             return Err(ReparentingError::SameGateway {
-                gateway: self.source.clone(),
+                gateway: source.clone(),
             });
         }
         for (index, step) in self.steps.iter().enumerate() {
             let TransitionStep::PublishGatewayAccess { gateway, identity } = step else {
                 continue;
             };
-            if gateway == &self.source {
+            if Some(gateway) == self.source.as_ref() {
                 return Err(ReparentingError::OverlappingAccess {
                     identity: identity.clone(),
                 });
             }
+            // An attach publishes access the identity never had: no earlier
+            // gateway exists, so no revocation can or must precede it.
+            let Some(source) = &self.source else {
+                continue;
+            };
             let revoke = self.steps.iter().position(|earlier| {
                 matches!(
                     earlier,
                     TransitionStep::RevokeGatewayAccess { gateway: old, identity: same }
-                        if old == &self.source && same == identity
+                        if old == source && same == identity
                 )
             });
             match revoke {
@@ -720,6 +744,19 @@ pub fn detect_reparenting(previous: &ResourceGraph, current: &ResourceGraph) -> 
             (None, None) => continue,
         };
         plans.push(plan);
+    }
+    // A deleted identity is absent from `current`, so the loop above never
+    // sees it. The deletion is still a reparenting transition: the gateway
+    // that served the identity must lose the access, even though no identity
+    // object remains to resolve.
+    for identity in previous.identities() {
+        let key = ResourceKey::new(&identity.metadata.namespace, &identity.metadata.name);
+        if current.identity(&key).is_some() {
+            continue;
+        }
+        if let Some(source) = effective_gateway(previous, &key) {
+            plans.push(ReparentPlan::build(source, None, &[key]));
+        }
     }
     plans
 }

@@ -22,9 +22,10 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: corvi-gateway
+      corvi.naktis.eu/gateway: sqlite
   serviceName: corvi-gateway-sqlite
   updateStrategy:
-    kind: RollingUpdate
+    type: RollingUpdate
   template:
     metadata:
       name: ''
@@ -41,14 +42,14 @@ spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
       hostNetwork: false
-      hostPid: false
-      hostIpc: false
+      hostPID: false
+      hostIPC: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
         seccompProfile:
-          kind: RuntimeDefault
+          type: RuntimeDefault
       containers:
       - name: gateway
         image: ghcr.io/naktis-labs/corvi-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -69,7 +70,7 @@ spec:
             - ALL
             add: []
           seccompProfile:
-            kind: RuntimeDefault
+            type: RuntimeDefault
           procMount: Default
         resources:
           requests:
@@ -81,18 +82,28 @@ spec:
         - name: config
           mountPath: /etc/corvi
           readOnly: true
+        - name: auth
+          mountPath: /etc/corvi/auth
+          readOnly: true
         - name: tmp
           mountPath: /tmp
           readOnly: false
+        - name: state
+          mountPath: /var/lib/corvi
+          readOnly: false
       volumes:
       - name: config
-        source: !configMap
+        configMap:
           name: corvi-gateway-sqlite-config
       - name: tmp
-        source: !emptyDir
+        emptyDir:
           medium: Memory
-          size_limit: 32Mi
+          sizeLimit: 32Mi
+      - name: auth
+        secret:
+          secretName: corvi-resource-server
+          defaultMode: 420
       - name: state
-        source: !persistentVolumeClaim
-          claim_name: corvi-gateway-sqlite-data
-          read_only: false
+        persistentVolumeClaim:
+          claimName: corvi-gateway-sqlite-data
+          readOnly: false

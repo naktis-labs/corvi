@@ -11,7 +11,8 @@
 //! know the provider's credentials.
 
 use mail_admin::{
-    Capabilities, Deadline, Operation, ProtocolSelection, ProviderError, ProviderStatus,
+    Capabilities, Deadline, MAX_EXECUTE_PAYLOAD_BYTES, Operation, ProtocolSelection, ProviderError,
+    ProviderStatus,
 };
 use std::fmt;
 
@@ -148,6 +149,14 @@ impl Request {
             Self::DeleteMailbox { .. } => "delete_mailbox",
         }
     }
+
+    /// The configuration payload this request carries, if any.
+    fn config(&self) -> Option<&[u8]> {
+        match self {
+            Self::UpdateDomain { config, .. } | Self::UpdateMailbox { config, .. } => Some(config),
+            _ => None,
+        }
+    }
 }
 
 /// How a provider call failed, as classified at the call boundary.
@@ -173,15 +182,19 @@ pub enum CallFailure {
 impl CallFailure {
     /// The status class the failure maps to.
     ///
-    /// A deadline overrun is not a provider status: it is a boundary
-    /// condition of this call, and it keeps its own error.
-    pub fn status(&self) -> ProviderStatus {
+    /// `None` for a deadline overrun. A deadline is a boundary condition of
+    /// this call, not a status the provider reported: reporting it as a
+    /// [`ProviderStatus::ProviderOutage`] would invite a caller to retry a
+    /// mutating call that may already have taken effect upstream. A caller
+    /// that needs a typed outcome keeps [`CallFailure::DeadlineExceeded`]
+    /// itself, which is how [`MigaduError`] reports it.
+    pub fn status(&self) -> Option<ProviderStatus> {
         match self {
-            CallFailure::NotConfigured => ProviderStatus::NotConfigured,
-            CallFailure::ValidationFailed => ProviderStatus::ValidationFailed,
-            CallFailure::ProviderOutage => ProviderStatus::ProviderOutage,
-            CallFailure::Drift => ProviderStatus::Drift,
-            CallFailure::DeadlineExceeded => ProviderStatus::ProviderOutage,
+            CallFailure::NotConfigured => Some(ProviderStatus::NotConfigured),
+            CallFailure::ValidationFailed => Some(ProviderStatus::ValidationFailed),
+            CallFailure::ProviderOutage => Some(ProviderStatus::ProviderOutage),
+            CallFailure::Drift => Some(ProviderStatus::Drift),
+            CallFailure::DeadlineExceeded => None,
         }
     }
 }
@@ -213,9 +226,11 @@ impl From<ProviderError> for MigaduError {
 }
 impl From<CallFailure> for MigaduError {
     fn from(failure: CallFailure) -> Self {
-        match failure {
-            CallFailure::DeadlineExceeded => MigaduError::DeadlineExceeded,
-            other => MigaduError::Status(other.status()),
+        match failure.status() {
+            Some(status) => MigaduError::Status(status),
+            // Only a deadline overrun has no provider status; it keeps its
+            // own error so a caller can never mistake it for an outage.
+            None => MigaduError::DeadlineExceeded,
         }
     }
 }
@@ -288,6 +303,10 @@ impl Migadu {
     /// host. It runs only for management calls; a provider outage returns a
     /// typed failure, never fabricated state. The deadline travels with the
     /// call, and a call that has outlived it is never started.
+    ///
+    /// The request is checked at this boundary, not trusted from wherever it
+    /// was built: a configuration payload past the contract's 1 MiB limit is
+    /// refused before the provider is contacted.
     pub fn execute<F>(
         &self,
         request: Request,
@@ -297,6 +316,12 @@ impl Migadu {
     where
         F: FnOnce(&Request, Deadline) -> Result<MigaduResponse, CallFailure>,
     {
+        if request
+            .config()
+            .is_some_and(|config| config.len() > MAX_EXECUTE_PAYLOAD_BYTES)
+        {
+            return Err(MigaduError::Contract(ProviderError::PayloadTooLarge));
+        }
         let Some(operation) = request.operation() else {
             // Destructive operations are intentionally not dispatched, even if a
             // caller provides a permissive capability set, until an official

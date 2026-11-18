@@ -453,7 +453,9 @@ fn an_opted_in_cache_stores_the_content_encrypted() {
     let blob_store = EncryptedDirectoryBlobStore::open(scratch.child("cache-blobs"), KEY).unwrap();
     let cache = EncryptedContentCache::new(blob_store, CachePolicy::enabled(600).unwrap());
     let engine = SyncEngine::new(
-        QueueFeatures::none().with_persistent_sync(true),
+        QueueFeatures::none()
+            .with_persistent_sync(true)
+            .with_encrypted_cache(true),
         &store,
         &cache,
     );
@@ -511,7 +513,9 @@ fn an_expired_cache_entry_is_removed() {
     let blob_store = EncryptedDirectoryBlobStore::open(scratch.child("cache-blobs"), KEY).unwrap();
     let cache = EncryptedContentCache::new(blob_store, CachePolicy::enabled(600).unwrap());
     let engine = SyncEngine::new(
-        QueueFeatures::none().with_persistent_sync(true),
+        QueueFeatures::none()
+            .with_persistent_sync(true)
+            .with_encrypted_cache(true),
         &store,
         &cache,
     );

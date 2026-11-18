@@ -16,16 +16,15 @@ use common::*;
 struct Fixtures {
     service: mail_upstream_oauth::onboarding::OnboardingService,
     broker: TokenBroker,
-    transport: Arc<mail_upstream_oauth::testing::FixtureTransport>,
+    escrow: Arc<mail_upstream_oauth::onboarding::DeliveryEscrow>,
     secrets: Arc<dyn SecretStore>,
-    secret_path: std::path::PathBuf,
 }
 
 fn fixtures() -> Fixtures {
     let clock = Arc::new(FixedClock::new(NOW));
     let transport = gmail_transport();
     let (service, escrow) = gmail_service(transport.clone(), clock.clone());
-    let (secrets, secret_path) = secret_store("onboarding");
+    let (secrets, _secret_path) = secret_store("onboarding");
     let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
     let registry = Arc::new(ProviderRegistry::builtin());
     let broker = TokenBroker::new(
@@ -35,15 +34,14 @@ fn fixtures() -> Fixtures {
         registry,
         Arc::new(mail_upstream_oauth::onboarding::RoleAuthorizer),
         Arc::new(MapClientSecrets::new()),
-        escrow,
+        escrow.clone(),
         clock,
     );
     Fixtures {
         service,
         broker,
-        transport,
+        escrow,
         secrets,
-        secret_path,
     }
 }
 
@@ -89,29 +87,35 @@ fn a_mailbox_reader_may_do_neither() {
 }
 
 #[test]
-fn the_data_plane_takes_the_credential_through_the_delivery_interface() {
+fn unsupported_delivery_preserves_ticket_and_writes_no_secret() {
     let fixtures = fixtures();
-    let callback = authorize(&fixtures.service);
     let outcome = fixtures
         .service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    let receipt = fixtures
-        .broker
-        .deliver(&outcome.delivery_ticket, &broker())
-        .expect("the data plane takes the credential");
-
-    assert_eq!(receipt.connection_id, outcome.connection_id);
-    assert_eq!(receipt.provider, "gmail");
-    assert_eq!(receipt.generation, 0);
+        .complete(&authorize(&fixtures.service))
+        .unwrap();
+    for _ in 0..2 {
+        let error = fixtures
+            .broker
+            .deliver(&outcome.delivery_ticket, &broker())
+            .unwrap_err();
+        assert!(
+            matches!(error, UpstreamOAuthError::Storage { ref reason } if reason.contains("shared durable connection coordination"))
+        );
+    }
     assert!(
-        receipt.secret_ref.starts_with("provider-connection/"),
-        "the receipt names the credential, it does not carry it"
+        fixtures
+            .escrow
+            .peek(&outcome.delivery_ticket, NOW)
+            .unwrap()
+            .is_some()
     );
-
-    let printed = format!("{receipt:?}");
-    assert!(!printed.contains(ACCESS_TOKEN), "{printed}");
-    assert!(!printed.contains(FIRST_REFRESH_TOKEN), "{printed}");
+    assert!(
+        fixtures
+            .secrets
+            .list(mail_upstream_oauth::token_broker::REFRESH_SECRET_OWNER)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -139,105 +143,9 @@ fn the_outcome_and_the_ticket_carry_no_token() {
 }
 
 #[test]
-fn a_ticket_is_used_once() {
-    let fixtures = fixtures();
-    let callback = authorize(&fixtures.service);
-    let outcome = fixtures
-        .service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    let ticket = outcome.delivery_ticket.clone();
-    fixtures
-        .broker
-        .deliver(&ticket, &broker())
-        .expect("the first delivery works");
-    let error = fixtures
-        .broker
-        .deliver(&ticket, &broker())
-        .expect_err("a second delivery finds no credential");
-    assert!(matches!(error, UpstreamOAuthError::InvalidRequest { .. }));
-}
-
-#[test]
-fn the_delivered_credential_is_encrypted_at_rest() {
-    let fixtures = fixtures();
-    let callback = authorize(&fixtures.service);
-    let outcome = fixtures
-        .service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    fixtures
-        .broker
-        .deliver(&outcome.delivery_ticket, &broker())
-        .expect("the data plane takes the credential");
-
-    let contents = std::fs::read_to_string(&fixtures.secret_path)
-        .expect("the secret file is readable for the test");
-    assert!(
-        !contents.contains(FIRST_REFRESH_TOKEN),
-        "the refresh credential is not in the file"
-    );
-    assert!(
-        !contents.contains(ACCESS_TOKEN),
-        "the access credential is not in the file"
-    );
-    // The escrow is empty: the credential is exactly where it must be.
-    assert!(fixtures.transport.request_count() >= 1);
-}
-
-#[test]
-fn the_delivered_credential_is_recoverable_and_bound_to_its_connection() {
-    let fixtures = fixtures();
-    let callback = authorize(&fixtures.service);
-    let outcome = fixtures
-        .service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    let receipt = fixtures
-        .broker
-        .deliver(&outcome.delivery_ticket, &broker())
-        .expect("the data plane takes the credential");
-
-    let references = fixtures
-        .secrets
-        .list(mail_upstream_oauth::token_broker::REFRESH_SECRET_OWNER)
-        .expect("the secret store lists its credentials");
-    assert_eq!(references.len(), 1);
-    assert_eq!(references[0].name, receipt.connection_id);
-
-    // The credential is recoverable by the data plane, with the context it
-    // was stored under.
-    let aad = mail_upstream_oauth::token_broker::refresh_secret_aad(
-        "gmail",
-        &receipt.connection_id,
-        "identity-1",
-    );
-    let value = fixtures
-        .secrets
-        .get(&references[0], &aad)
-        .expect("the envelope opens")
-        .expect("the credential is there");
-    assert_eq!(value, FIRST_REFRESH_TOKEN.as_bytes());
-
-    // The same envelope under another connection's context does not open,
-    // so a credential copied into another connection is useless there.
-    let elsewhere = mail_upstream_oauth::token_broker::refresh_secret_aad(
-        "gmail",
-        "conn-elsewhere",
-        "identity-1",
-    );
-    let error = fixtures
-        .secrets
-        .get(&references[0], &elsewhere)
-        .expect_err("a moved credential does not decrypt");
-    assert!(matches!(error, mail_storage::StorageError::KeyMismatch));
-}
-
-#[test]
 fn a_credential_that_arrived_in_a_handoff_takes_the_same_delivery_path() {
-    let clock = Arc::new(FixedClock::new(NOW));
     let escrow = Arc::new(mail_upstream_oauth::onboarding::DeliveryEscrow::new());
-    let guard = mail_upstream_oauth::handoff::MemoryOneTimeUseGuard::new();
+    let guard = mail_upstream_oauth::handoff::SingleProcessOneTimeUseGuard::new();
     let key = b"a shared key that is long enough";
 
     // The companion CLI sealed the credential on its own machine.
@@ -258,40 +166,20 @@ fn a_credential_that_arrived_in_a_handoff_takes_the_same_delivery_path() {
         mail_upstream_oauth::handoff::issue_handoff(&payload, key, "controller-1", NOW, 120)
             .expect("the handoff is issued");
 
-    // The controller opens it and gets an ordinary delivery ticket.
-    let ticket = escrow
-        .accept_handoff(&envelope, key, "controller-1", NOW, &guard)
-        .expect("the controller accepts the handoff");
-    assert!(!ticket.is_empty());
-
-    // The data plane takes it exactly as it takes a hosted grant.
-    let (secrets, secret_path) = secret_store("handoff-delivery");
-    let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
-    let transport = gmail_transport();
-    let registry = Arc::new(ProviderRegistry::builtin());
-    let token_broker = TokenBroker::new(
-        connection_store(),
-        secrets.clone(),
-        transport,
-        registry,
-        Arc::new(mail_upstream_oauth::onboarding::RoleAuthorizer),
-        Arc::new(MapClientSecrets::new()),
-        escrow.clone(),
-        clock,
-    );
-    let receipt = token_broker
-        .deliver(&ticket, &broker())
-        .expect("the data plane takes the credential");
-    assert_eq!(receipt.connection_id, "conn-handoff");
-
-    let contents = std::fs::read_to_string(&secret_path).expect("the secret file is there");
-    assert!(!contents.contains(FIRST_REFRESH_TOKEN));
-
-    // The envelope cannot be replayed into a second credential.
     let error = escrow
-        .accept_handoff(&envelope, key, "controller-1", NOW, &guard)
-        .expect_err("the envelope was already redeemed");
-    assert!(matches!(error, UpstreamOAuthError::HandoffRejected { .. }));
+        .accept_handoff(
+            &envelope,
+            key,
+            "controller-1",
+            NOW,
+            &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+            &guard,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, UpstreamOAuthError::Storage { ref reason } if reason.contains("durable replay"))
+    );
+    assert!(escrow.is_empty());
 }
 
 #[test]
@@ -333,11 +221,88 @@ fn a_credential_without_a_refresh_token_is_not_delivered() {
     let error = token_broker
         .deliver(&outcome.delivery_ticket, &broker())
         .expect_err("a connection without a refresh credential cannot be stored");
-    match &error {
-        UpstreamOAuthError::NeedsReauthorization { reason, .. } => {
-            assert!(reason.contains("no refresh credential"), "{reason}");
-        }
-        other => panic!("expected NeedsReauthorization, got {other:?}"),
+    assert!(
+        matches!(error, UpstreamOAuthError::Storage { ref reason } if reason.contains("shared durable connection coordination"))
+    );
+}
+
+/// Two deliveries of one ticket at once.
+///
+/// The file secret store keeps one versioned envelope per owner and name:
+/// a second write replaces the envelope and raises its version, and a
+/// reference that names the old version no longer opens anything. So a
+/// delivery that writes the credential while another delivery of the same
+/// ticket is still in flight must not be possible: the loser would leave
+/// the winner's reference pointing at an envelope that no longer exists.
+
+#[test]
+fn direct_claim_cannot_bypass_delivery_window() {
+    use mail_upstream_oauth::onboarding::DeliveryEscrow;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let escrow = Arc::new(DeliveryEscrow::new());
+    let window = escrow.delivery_window().unwrap();
+    let (send, recv) = mpsc::channel();
+    let other = escrow.clone();
+    let thread = std::thread::spawn(move || {
+        let _ = other.claim("missing", NOW);
+        send.send(()).unwrap();
+    });
+    let blocked = recv.recv_timeout(Duration::from_millis(100)).is_err();
+    drop(window);
+    thread.join().unwrap();
+    assert!(blocked, "direct claim must respect the delivery window");
+}
+
+#[test]
+fn separate_escrows_same_connection_fail_closed_without_consuming_credentials() {
+    use mail_upstream_oauth::flow::ProviderTokens;
+    use mail_upstream_oauth::onboarding::{DeliveryEscrow, EscrowedCredential, RoleAuthorizer};
+    let clock = Arc::new(FixedClock::new(NOW));
+    let transport = gmail_transport();
+    let connections = connection_store();
+    let (secrets, _) = secret_store("unsupported-cross-instance");
+    let secrets = Arc::new(secrets);
+    let credential = EscrowedCredential {
+        provider: "gmail".into(),
+        connection_id: "same-connection".into(),
+        identity: "identity".into(),
+        expected_account: "account".into(),
+        capabilities: vec![],
+        tokens: ProviderTokens {
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: None,
+            scopes: vec![],
+        },
+        issued_at: NOW,
+        expires_at: NOW + 600,
+    };
+    let first = Arc::new(DeliveryEscrow::new());
+    let second = Arc::new(DeliveryEscrow::new());
+    let first_ticket = first.issue(credential.clone()).unwrap();
+    let second_ticket = second.issue(credential).unwrap();
+    for (escrow, ticket) in [
+        (first.clone(), &first_ticket),
+        (second.clone(), &second_ticket),
+    ] {
+        let delivery = TokenBroker::new(
+            connections.clone(),
+            secrets.clone(),
+            transport.clone(),
+            Arc::new(ProviderRegistry::builtin()),
+            Arc::new(RoleAuthorizer),
+            Arc::new(MapClientSecrets::new()),
+            escrow.clone(),
+            clock.clone(),
+        );
+        assert!(delivery.deliver(ticket, &broker()).is_err());
+        assert!(escrow.peek(ticket, NOW).unwrap().is_some());
     }
-    assert_eq!(error.status().as_str(), "needsReauthorization");
+    assert!(
+        secrets
+            .list(mail_upstream_oauth::token_broker::REFRESH_SECRET_OWNER)
+            .unwrap()
+            .is_empty()
+    );
 }

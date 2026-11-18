@@ -29,9 +29,13 @@ pub enum ExporterError {
 /// that a scrape never calls an upstream provider API, so an implementation
 /// reads cached samples and never reaches out on the scrape path.
 ///
-/// Implementations must be bounded in time and size, and must report a
-/// deadline miss as [`ExporterError::Timeout`]. The recorder contains every
-/// failure, including a panic, so an implementation cannot break mail.
+/// Implementations should be bounded in size, and should report a deadline
+/// miss as [`ExporterError::Timeout`] so a caller can tell it from an outage.
+/// Time is not left to the implementation: the recorder drives every export
+/// on its own worker thread and abandons one that outlives the configured
+/// flush deadline, so an implementation that blocks cannot block the caller.
+/// The recorder contains every failure, including a panic, so an
+/// implementation cannot break mail.
 pub trait TelemetryExporter {
     /// Export a batch of events.
     fn export_batch(&mut self, batch: &[TelemetryEvent]) -> Result<(), ExporterError>;

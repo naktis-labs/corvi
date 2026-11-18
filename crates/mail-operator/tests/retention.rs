@@ -11,16 +11,26 @@ use mail_operator::retention::{
 };
 
 fn snapshot_yaml(generation: u64, identities: &[(&str, &str)]) -> String {
+    snapshot_yaml_isolated(
+        generation,
+        &identities
+            .iter()
+            .map(|(id, mailbox)| (*id, *mailbox, IsolationMode::Dedicated))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn snapshot_yaml_isolated(generation: u64, identities: &[(&str, &str, IsolationMode)]) -> String {
     let builder = SnapshotBuilder {
         gateway: key("primary"),
         generation,
         identities: identities
             .iter()
-            .map(|(id, mailbox)| SnapshotIdentity {
+            .map(|(id, mailbox, isolation)| SnapshotIdentity {
                 id: (*id).to_owned(),
                 mailbox: (*mailbox).to_owned(),
                 address: format!("{id}@example.com"),
-                isolation: IsolationMode::Dedicated,
+                isolation: *isolation,
             })
             .collect(),
         ..SnapshotBuilder::default()
@@ -294,6 +304,44 @@ fn a_revoked_identity_is_removed_from_the_retained_snapshot() {
     assert_eq!(active.generation(), 2);
     assert_eq!(active.identities().len(), 1);
     assert_eq!(active.identities()[0].id.as_str(), "noreply");
+}
+
+#[test]
+fn a_revocation_preserves_the_remaining_identities_isolation() {
+    let mut retention = SnapshotRetention::new();
+    retention
+        .publish(
+            &key("primary"),
+            &snapshot_yaml_isolated(
+                1,
+                &[
+                    ("me", "personal", IsolationMode::BestEffort),
+                    ("noreply", "service", IsolationMode::Dedicated),
+                ],
+            ),
+            None,
+            10,
+        )
+        .expect("a valid snapshot is published");
+
+    let outcome = retention
+        .revoke_identity(&key("primary"), "noreply", 20)
+        .expect("the revocation is published");
+
+    assert_eq!(outcome, RevocationOutcome::Published { generation: 2 });
+    let active = retention
+        .active(&key("primary"))
+        .expect("the reduced snapshot is retained");
+    let remaining = active
+        .identities()
+        .iter()
+        .find(|identity| identity.id.as_str() == "me")
+        .expect("the unrevoked identity is still served");
+    assert_eq!(
+        remaining.isolation,
+        IsolationMode::BestEffort,
+        "revoking one identity must not upgrade the isolation of the others"
+    );
 }
 
 #[test]

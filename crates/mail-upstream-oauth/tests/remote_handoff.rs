@@ -9,7 +9,8 @@ use mail_upstream_oauth::clock::{Clock, FixedClock};
 use mail_upstream_oauth::error::{HandoffFailure, UpstreamOAuthError};
 use mail_upstream_oauth::flow::ProviderTokens;
 use mail_upstream_oauth::handoff::{
-    MAX_HANDOFF_TTL_SECONDS, MemoryOneTimeUseGuard, issue_handoff, redeem_handoff,
+    HandoffLifetime, MAX_HANDOFF_TTL_SECONDS, SingleProcessOneTimeUseGuard, issue_handoff,
+    redeem_handoff,
 };
 use mail_upstream_oauth::scope::Capability;
 
@@ -39,17 +40,20 @@ fn envelope(clock: &FixedClock) -> mail_upstream_oauth::handoff::HandoffEnvelope
 }
 
 #[test]
-fn a_handoff_round_trips() {
-    let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
-    let envelope = envelope(&clock);
-    let redeemed = redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect("the handoff redeems");
-    assert_eq!(redeemed.provider, "gmail");
-    assert_eq!(redeemed.expected_account, ACCOUNT);
-    assert_eq!(
-        redeemed.tokens.refresh_token.as_deref(),
-        Some("rt-handoff-marker")
+fn authenticated_handoff_fails_closed_without_durable_guard() {
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let envelope = envelope(&FixedClock::new(NOW));
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        NOW,
+        &HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UpstreamOAuthError::Storage { ref reason } if reason.contains("durable replay"))
     );
 }
 
@@ -79,34 +83,44 @@ fn the_envelope_leaks_nothing() {
 }
 
 #[test]
-fn a_handoff_is_used_once() {
-    let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
-    let envelope = envelope(&clock);
-    redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect("the first redemption works");
-    let error = redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect_err("a replayed envelope is refused");
-    match error {
-        UpstreamOAuthError::HandoffRejected { reason } => {
-            assert_eq!(reason, HandoffFailure::Replayed);
-        }
-        other => panic!("expected HandoffRejected, got {other:?}"),
+fn repeated_unsupported_redemptions_do_not_consume_guard() {
+    use mail_upstream_oauth::handoff::OneTimeUseGuard;
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let envelope = envelope(&FixedClock::new(NOW));
+    for _ in 0..2 {
+        assert!(
+            redeem_handoff(
+                &envelope,
+                KEY,
+                RECIPIENT,
+                NOW,
+                &HandoffLifetime::unbounded(),
+                &guard
+            )
+            .is_err()
+        );
     }
+    assert!(guard.consume(&envelope.envelope_id, NOW).unwrap());
 }
 
 #[test]
 fn a_tampered_envelope_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let mut envelope = envelope(&clock);
-    let mut ciphertext =
-        mail_upstream_oauth::pkce::base64url_decode(&envelope.ciphertext).expect("the ciphertext");
+    let mut ciphertext = hex::decode(&envelope.ciphertext).expect("the ciphertext");
     let last = ciphertext.len() - 1;
     ciphertext[last] ^= 0x01;
-    envelope.ciphertext = mail_upstream_oauth::pkce::base64url_encode(&ciphertext);
-    let error = redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect_err("a modified envelope does not authenticate");
+    envelope.ciphertext = hex::encode(&ciphertext);
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("a modified envelope does not authenticate");
     match error {
         UpstreamOAuthError::HandoffRejected { reason } => {
             assert_eq!(reason, HandoffFailure::Tampered);
@@ -118,11 +132,18 @@ fn a_tampered_envelope_is_refused() {
 #[test]
 fn a_tampered_expiry_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let mut envelope = envelope(&clock);
     envelope.expires_at += 10_000;
-    let error = redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect_err("the expiry is inside the authenticated data");
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("the expiry is inside the authenticated data");
     match error {
         UpstreamOAuthError::HandoffRejected { reason } => {
             assert_eq!(reason, HandoffFailure::Tampered);
@@ -134,11 +155,18 @@ fn a_tampered_expiry_is_refused() {
 #[test]
 fn a_tampered_recipient_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let mut envelope = envelope(&clock);
     envelope.recipient = "controller-2".to_owned();
-    let error = redeem_handoff(&envelope, KEY, "controller-2", clock.now(), &guard)
-        .expect_err("the recipient is inside the authenticated data");
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        "controller-2",
+        clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("the recipient is inside the authenticated data");
     match error {
         UpstreamOAuthError::HandoffRejected { reason } => {
             assert_eq!(reason, HandoffFailure::Tampered);
@@ -150,11 +178,18 @@ fn a_tampered_recipient_is_refused() {
 #[test]
 fn an_expired_envelope_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let envelope = envelope(&clock);
     clock.advance(121);
-    let error = redeem_handoff(&envelope, KEY, RECIPIENT, clock.now(), &guard)
-        .expect_err("an expired envelope is refused");
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("an expired envelope is refused");
     match error {
         UpstreamOAuthError::HandoffRejected { reason } => {
             assert_eq!(reason, HandoffFailure::Expired);
@@ -166,10 +201,17 @@ fn an_expired_envelope_is_refused() {
 #[test]
 fn an_envelope_for_somebody_else_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let envelope = envelope(&clock);
-    let error = redeem_handoff(&envelope, KEY, "controller-2", clock.now(), &guard)
-        .expect_err("an envelope addressed elsewhere is refused");
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        "controller-2",
+        clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("an envelope addressed elsewhere is refused");
     match error {
         UpstreamOAuthError::HandoffRejected { reason } => {
             assert_eq!(reason, HandoffFailure::UnknownRecipient);
@@ -181,13 +223,14 @@ fn an_envelope_for_somebody_else_is_refused() {
 #[test]
 fn a_wrong_key_is_refused() {
     let clock = Arc::new(FixedClock::new(NOW));
-    let guard = MemoryOneTimeUseGuard::new();
+    let guard = SingleProcessOneTimeUseGuard::new();
     let envelope = envelope(&clock);
     let error = redeem_handoff(
         &envelope,
         b"a different key that is long enough",
         RECIPIENT,
         clock.now(),
+        &mail_upstream_oauth::handoff::HandoffLifetime::unbounded(),
         &guard,
     )
     .expect_err("a key that does not match does not open the envelope");
@@ -228,4 +271,173 @@ fn every_handoff_envelope_is_unique() {
     let second = envelope(&clock);
     assert_ne!(first.envelope_id, second.envelope_id);
     assert_ne!(first.ciphertext, second.ciphertext);
+}
+
+#[test]
+fn an_envelope_issued_in_the_future_is_refused() {
+    let clock = Arc::new(FixedClock::new(NOW));
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let mut envelope = envelope(&clock);
+    // The issuance moment is on the envelope in the clear; a deployment
+    // that finds an envelope from the future is looking at one that this
+    // deployment cannot have issued with a clock it trusts.
+    envelope.issued_at = NOW + 10_000;
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &HandoffLifetime::unbounded(),
+        &guard,
+    )
+    .expect_err("an envelope from the future is refused");
+    match error {
+        UpstreamOAuthError::HandoffRejected { reason } => {
+            assert_eq!(reason, HandoffFailure::Unknown);
+        }
+        other => panic!("expected HandoffRejected, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_envelope_issued_before_the_floor_is_refused() {
+    let clock = Arc::new(FixedClock::new(NOW));
+    let guard = SingleProcessOneTimeUseGuard::new();
+    // The envelope was issued at NOW; a deployment that starts accepting
+    // handoffs from NOW + 60 refuses it.
+    let envelope = envelope(&clock);
+    let error = redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &HandoffLifetime::since(NOW + 60),
+        &guard,
+    )
+    .expect_err("an envelope older than the floor is refused");
+    match error {
+        UpstreamOAuthError::HandoffRejected { reason } => {
+            assert_eq!(reason, HandoffFailure::Unknown);
+        }
+        other => panic!("expected HandoffRejected, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_envelope_at_the_floor_reaches_the_disabled_boundary() {
+    let clock = Arc::new(FixedClock::new(NOW));
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let envelope = envelope(&clock);
+    redeem_handoff(
+        &envelope,
+        KEY,
+        RECIPIENT,
+        clock.now(),
+        &HandoffLifetime::since(NOW),
+        &guard,
+    )
+    .expect_err("redemption is disabled without durable replay protection");
+}
+
+#[test]
+fn tampering_issued_at_cannot_bypass_the_floor() {
+    let clock = FixedClock::new(NOW);
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let original = envelope(&clock);
+    let mut altered = original.clone();
+    altered.issued_at += 1;
+    assert!(matches!(
+        redeem_handoff(
+            &altered,
+            KEY,
+            RECIPIENT,
+            NOW + 1,
+            &HandoffLifetime::since(NOW + 1),
+            &guard
+        ),
+        Err(UpstreamOAuthError::HandoffRejected {
+            reason: HandoffFailure::Tampered
+        })
+    ));
+    assert!(matches!(
+        redeem_handoff(
+            &original,
+            KEY,
+            RECIPIENT,
+            NOW + 1,
+            &HandoffLifetime::unbounded(),
+            &guard
+        ),
+        Err(UpstreamOAuthError::Storage { .. })
+    ));
+}
+
+#[test]
+fn legacy_v1_envelope_is_rejected_without_consuming_id() {
+    use mail_storage::crypto::{Cipher, derive_key};
+    let clock = FixedClock::new(NOW);
+    let guard = SingleProcessOneTimeUseGuard::new();
+    let mut old = envelope(&clock);
+    let valid = old.clone();
+    let salt = hex::decode(&old.salt).unwrap();
+    let context = format!(
+        "corvi-upstream-oauth-handoff/v1|{}|{}",
+        old.recipient, old.envelope_id
+    );
+    let key = derive_key(KEY, &salt, context.as_bytes()).unwrap();
+    let aad = format!(
+        "corvi-upstream-oauth-handoff/v1\nrecipient={}\nenvelope={}\nexpires_at={}",
+        old.recipient, old.envelope_id, old.expires_at
+    );
+    let (nonce, ciphertext) = Cipher::new(&key)
+        .unwrap()
+        .seal(&serde_json::to_vec(&payload()).unwrap(), aad.as_bytes())
+        .unwrap();
+    old.nonce = hex::encode(nonce);
+    old.ciphertext = hex::encode(ciphertext);
+    assert!(matches!(
+        redeem_handoff(
+            &old,
+            KEY,
+            RECIPIENT,
+            NOW,
+            &HandoffLifetime::unbounded(),
+            &guard
+        ),
+        Err(UpstreamOAuthError::HandoffRejected {
+            reason: HandoffFailure::Tampered
+        })
+    ));
+    assert!(matches!(
+        redeem_handoff(
+            &valid,
+            KEY,
+            RECIPIENT,
+            NOW,
+            &HandoffLifetime::unbounded(),
+            &guard
+        ),
+        Err(UpstreamOAuthError::Storage { .. })
+    ));
+}
+
+#[test]
+fn separate_process_local_guards_cannot_redeem() {
+    let envelope = envelope(&FixedClock::new(NOW));
+    for guard in [
+        SingleProcessOneTimeUseGuard::new(),
+        SingleProcessOneTimeUseGuard::new(),
+    ] {
+        assert!(
+            redeem_handoff(
+                &envelope,
+                KEY,
+                RECIPIENT,
+                NOW,
+                &HandoffLifetime::unbounded(),
+                &guard
+            )
+            .is_err()
+        );
+    }
 }

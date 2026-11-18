@@ -9,12 +9,15 @@ use mail_policy_engine::oci::artifact::{
 };
 use mail_policy_engine::oci::build::{BuildError, PolicyMetadata, build_release_variants};
 use mail_policy_engine::oci::digest::{digest_of, sha256_hex};
-use mail_policy_engine::oci::manifest::WASM_LAYER_MEDIA_TYPE;
-use mail_policy_engine::oci::tar::read_entries;
+use mail_policy_engine::oci::manifest::{
+    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE, OCI_TAR_LAYER_MEDIA_TYPE,
+    WASM_LAYER_MEDIA_TYPE,
+};
+use mail_policy_engine::oci::tar::{self, TarEntry, read_entries};
 use mail_policy_engine::oci::wasm::{AbiExpectation, CapabilityAllowlist};
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
-    TypeSection, ValType,
+    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
+    Instruction, Module, TypeSection, ValType,
 };
 
 fn policy_module() -> Vec<u8> {
@@ -43,6 +46,91 @@ fn metadata(module: &[u8]) -> PolicyMetadata {
         "corvi-policy-input-v1",
         "Privacy policy",
     )
+}
+
+/// Package `module` into an image-volume artifact: a hand-built tar layer
+/// with the module and its metadata, and a matching manifest.
+fn volume_variant(module: &[u8]) -> (Vec<u8>, String, Vec<LayerBlob>) {
+    let metadata = metadata(module);
+    let archive = tar::write_entries(&[
+        TarEntry {
+            path: "policy.wasm".to_string(),
+            mode: 0o644,
+            data: module.to_vec(),
+        },
+        TarEntry {
+            path: "policy.json".to_string(),
+            mode: 0o644,
+            data: metadata.to_json_bytes(),
+        },
+    ])
+    .expect("the archive writes");
+    let layer = LayerBlob::new(archive);
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": OCI_MANIFEST_MEDIA_TYPE,
+        "config": {
+            "mediaType": OCI_IMAGE_CONFIG_MEDIA_TYPE,
+            "digest": format!("sha256:{}", "0".repeat(64)),
+            "size": 2,
+        },
+        "layers": [{
+            "mediaType": OCI_TAR_LAYER_MEDIA_TYPE,
+            "digest": layer.digest,
+            "size": layer.size(),
+        }],
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("the manifest serialises");
+    let digest = digest_of(&manifest_bytes);
+    (manifest_bytes, digest, vec![layer])
+}
+
+/// A structurally valid module that imports a host function the allowlist
+/// does not name.
+fn module_with_forbidden_import() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut imports = ImportSection::new();
+    imports.import(
+        "wasi_snapshot_preview1",
+        "fd_write",
+        EntityType::Function(0),
+    );
+    module.section(&imports);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("evaluate", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut function = Function::new(std::iter::empty::<(u32, ValType)>());
+    function.instruction(&Instruction::End);
+    code.function(&function);
+    module.section(&code);
+    module.finish()
+}
+
+/// A structurally valid module that exports none of the ABI entry points.
+fn module_without_entry_point() -> Vec<u8> {
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    module.section(&types);
+    let mut functions = FunctionSection::new();
+    functions.function(0);
+    module.section(&functions);
+    let mut exports = ExportSection::new();
+    exports.export("decide", ExportKind::Func, 0);
+    module.section(&exports);
+    let mut code = CodeSection::new();
+    let mut function = Function::new(std::iter::empty::<(u32, ValType)>());
+    function.instruction(&Instruction::End);
+    code.function(&function);
+    module.section(&code);
+    module.finish()
 }
 
 #[test]
@@ -117,11 +205,98 @@ fn the_volume_variant_validates_as_a_read_only_data_filesystem() {
         &variants.volume.manifest_digest,
         &variants.volume.layers,
         Some(&sha256_hex(&module)),
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
     )
     .expect("the volume variant validates");
 
     assert_eq!(artifact.module, module);
     assert_eq!(artifact.module_sha256, sha256_hex(&module));
+}
+
+#[test]
+fn the_volume_variant_validates_the_module_like_the_native_variant() {
+    let module = policy_module();
+    let (manifest, digest, layers) = volume_variant(&module);
+
+    let artifact = validate_volume_artifact(
+        &manifest,
+        &digest,
+        &layers,
+        None,
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
+    )
+    .expect("a valid module passes the volume path");
+
+    assert_eq!(artifact.module, module);
+    assert_eq!(artifact.module_sha256, sha256_hex(&module));
+}
+
+#[test]
+fn the_volume_variant_rejects_a_module_with_a_forbidden_import() {
+    let module = module_with_forbidden_import();
+    let (manifest, digest, layers) = volume_variant(&module);
+
+    let error = validate_volume_artifact(
+        &manifest,
+        &digest,
+        &layers,
+        None,
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
+    )
+    .expect_err("the volume path enforces the import allowlist");
+
+    match error {
+        ArtifactError::ForbiddenImport { module, name } => {
+            assert_eq!(module, "wasi_snapshot_preview1");
+            assert_eq!(name, "fd_write");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn the_volume_variant_rejects_a_module_without_the_entry_point() {
+    let module = module_without_entry_point();
+    let (manifest, digest, layers) = volume_variant(&module);
+
+    let error = validate_volume_artifact(
+        &manifest,
+        &digest,
+        &layers,
+        None,
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
+    )
+    .expect_err("the volume path requires the ABI entry point");
+
+    assert!(
+        matches!(error, ArtifactError::MissingEntryPoint { .. }),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn the_volume_variant_rejects_a_module_that_is_not_wasm() {
+    let module = b"not a wasm module".to_vec();
+    let (manifest, digest, layers) = volume_variant(&module);
+
+    let error = validate_volume_artifact(
+        &manifest,
+        &digest,
+        &layers,
+        None,
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
+    )
+    .expect_err("the volume path only accepts WebAssembly modules");
+
+    assert!(
+        matches!(error, ArtifactError::InvalidModule(_)),
+        "unexpected error: {error:?}"
+    );
 }
 
 #[test]
@@ -181,6 +356,8 @@ fn the_volume_variant_is_refused_when_the_expected_module_digest_differs() {
         &variants.volume.manifest_digest,
         &variants.volume.layers,
         Some(&sha256_hex(b"a different module")),
+        &CapabilityAllowlist::deny_all(),
+        &AbiExpectation::corvi_policy_v1(),
     )
     .expect_err("the volume mount is verified against the release digest");
 

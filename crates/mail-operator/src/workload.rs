@@ -423,6 +423,7 @@ pub struct WorkloadMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct SeccompProfile {
     /// The profile type.
+    #[serde(rename = "type")]
     pub kind: String,
 }
 
@@ -542,13 +543,153 @@ pub enum VolumeSource {
 }
 
 /// A pod volume.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// The serde representation is the Kubernetes one: `name` plus exactly one
+/// source key (`configMap:`, `emptyDir:`, `persistentVolumeClaim:` or
+/// `secret:`), so a rendered workload is applicable Kubernetes YAML and not a
+/// serde-internal enum tagging.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Volume {
     /// The volume name.
     pub name: String,
     /// The volume source.
     pub source: VolumeSource,
+}
+
+impl Serialize for Volume {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("name", &self.name)?;
+        match &self.source {
+            VolumeSource::EmptyDir { medium, size_limit } => {
+                map.serialize_entry(
+                    "emptyDir",
+                    &EmptyDirSource {
+                        medium: medium.clone(),
+                        size_limit: size_limit.clone(),
+                    },
+                )?;
+            }
+            VolumeSource::ConfigMap { name } => {
+                map.serialize_entry("configMap", &ConfigMapSource { name: name.clone() })?;
+            }
+            VolumeSource::PersistentVolumeClaim {
+                claim_name,
+                read_only,
+            } => {
+                map.serialize_entry(
+                    "persistentVolumeClaim",
+                    &PersistentVolumeClaimSource {
+                        claim_name: claim_name.clone(),
+                        read_only: *read_only,
+                    },
+                )?;
+            }
+            VolumeSource::Secret {
+                secret_name,
+                default_mode,
+            } => {
+                map.serialize_entry(
+                    "secret",
+                    &SecretSource {
+                        secret_name: secret_name.clone(),
+                        default_mode: *default_mode,
+                    },
+                )?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Volume {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Raw {
+            name: String,
+            #[serde(default)]
+            empty_dir: Option<EmptyDirSource>,
+            #[serde(default)]
+            config_map: Option<ConfigMapSource>,
+            #[serde(default)]
+            persistent_volume_claim: Option<PersistentVolumeClaimSource>,
+            #[serde(default)]
+            secret: Option<SecretSource>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let sources = [
+            raw.empty_dir.is_some(),
+            raw.config_map.is_some(),
+            raw.persistent_volume_claim.is_some(),
+            raw.secret.is_some(),
+        ];
+        if sources.iter().filter(|declared| **declared).count() != 1 {
+            return Err(serde::de::Error::custom(
+                "a volume declares exactly one source",
+            ));
+        }
+        let source = if let Some(empty_dir) = raw.empty_dir {
+            VolumeSource::EmptyDir {
+                medium: empty_dir.medium,
+                size_limit: empty_dir.size_limit,
+            }
+        } else if let Some(config_map) = raw.config_map {
+            VolumeSource::ConfigMap {
+                name: config_map.name,
+            }
+        } else if let Some(claim) = raw.persistent_volume_claim {
+            VolumeSource::PersistentVolumeClaim {
+                claim_name: claim.claim_name,
+                read_only: claim.read_only,
+            }
+        } else {
+            let secret = raw.secret.expect("exactly one source is declared");
+            VolumeSource::Secret {
+                secret_name: secret.secret_name,
+                default_mode: secret.default_mode,
+            }
+        };
+        Ok(Volume {
+            name: raw.name,
+            source,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EmptyDirSource {
+    medium: String,
+    size_limit: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigMapSource {
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistentVolumeClaimSource {
+    claim_name: String,
+    read_only: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretSource {
+    secret_name: String,
+    default_mode: u32,
 }
 
 /// A container.
@@ -592,8 +733,10 @@ pub struct PodSpec {
     /// Whether the pod uses the host network.
     pub host_network: bool,
     /// Whether the pod shares the host PID namespace.
+    #[serde(rename = "hostPID")]
     pub host_pid: bool,
     /// Whether the pod shares the host IPC namespace.
+    #[serde(rename = "hostIPC")]
     pub host_ipc: bool,
     /// The pod security context.
     pub security_context: PodSecurityContext,
@@ -622,6 +765,7 @@ pub struct PodTemplate {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStrategy {
     /// The strategy type.
+    #[serde(rename = "type")]
     pub kind: String,
 }
 
@@ -765,6 +909,12 @@ pub struct PolicyMetadata {
 pub struct AdmissionPolicy {
     /// The policy name.
     pub name: String,
+    /// The namespace the policy was observed in.
+    ///
+    /// A policy only constrains the workloads of its own namespace, so the
+    /// trust check compares this against the workload's namespace.
+    #[serde(default)]
+    pub namespace: String,
     /// Where the policy came from.
     #[serde(default)]
     pub source: PolicySource,
@@ -1007,6 +1157,16 @@ pub fn render_gateway_workload(
                 size_limit: "32Mi".to_owned(),
             },
         },
+        // The authorization configuration is a Secret: it is mounted read
+        // only, never baked into the ConfigMap and never left on the root
+        // filesystem.
+        Volume {
+            name: "auth".to_owned(),
+            source: VolumeSource::Secret {
+                secret_name: gateway.spec.authorization.config_secret_ref.name.clone(),
+                default_mode: 0o644,
+            },
+        },
     ];
     if let Some(claim) = &gateway.spec.state.existing_claim_name {
         volumes.push(Volume {
@@ -1031,6 +1191,33 @@ pub fn render_gateway_workload(
         });
     }
 
+    // Every declared volume is mounted: a volume without a mount is a
+    // declaration whose data silently lands on the read-only root filesystem.
+    let mut volume_mounts = vec![
+        VolumeMount {
+            name: "config".to_owned(),
+            mount_path: "/etc/corvi".to_owned(),
+            read_only: true,
+        },
+        VolumeMount {
+            name: "auth".to_owned(),
+            mount_path: "/etc/corvi/auth".to_owned(),
+            read_only: true,
+        },
+        VolumeMount {
+            name: "tmp".to_owned(),
+            mount_path: "/tmp".to_owned(),
+            read_only: false,
+        },
+    ];
+    if gateway.spec.state.existing_claim_name.is_some() {
+        volume_mounts.push(VolumeMount {
+            name: "state".to_owned(),
+            mount_path: "/var/lib/corvi".to_owned(),
+            read_only: false,
+        });
+    }
+
     let container = Container {
         name: "gateway".to_owned(),
         image: profile.gateway_image.clone(),
@@ -1040,18 +1227,7 @@ pub fn render_gateway_workload(
         ports,
         security_context: hardened_container_security_context(),
         resources: gateway.spec.resources.clone(),
-        volume_mounts: vec![
-            VolumeMount {
-                name: "config".to_owned(),
-                mount_path: "/etc/corvi".to_owned(),
-                read_only: true,
-            },
-            VolumeMount {
-                name: "tmp".to_owned(),
-                mount_path: "/tmp".to_owned(),
-                read_only: false,
-            },
-        ],
+        volume_mounts,
     };
 
     let pod = PodSpec {
@@ -1087,10 +1263,16 @@ pub fn render_gateway_workload(
     };
 
     let selector = LabelSelector {
-        match_labels: [(
-            "app.kubernetes.io/name".to_owned(),
-            "corvi-gateway".to_owned(),
-        )]
+        match_labels: [
+            (
+                "app.kubernetes.io/name".to_owned(),
+                "corvi-gateway".to_owned(),
+            ),
+            (
+                "corvi.naktis.eu/gateway".to_owned(),
+                gateway.metadata.name.clone(),
+            ),
+        ]
         .into_iter()
         .collect(),
     };
@@ -1327,9 +1509,15 @@ fn is_digest_pinned(image: &str) -> bool {
 }
 
 /// Check that an expected policy is installed by an independent control.
+///
+/// A policy only constrains the pods of its own namespace, so the check
+/// requires the observed policy to live in the workload's namespace: a
+/// same-named policy in a foreign namespace enforces nothing here and never
+/// satisfies the expectation.
 pub fn check_policy_trust(
     expected: &PolicyExpectation,
     observed: &ObservedPolicies,
+    namespace: &str,
 ) -> Result<(), WorkloadViolation> {
     if expected.source != PolicySource::IndependentlyInstalled {
         return Err(WorkloadViolation::PolicyNotIndependentlyTrusted {
@@ -1341,7 +1529,7 @@ pub fn check_policy_trust(
             let found = observed
                 .admission
                 .as_ref()
-                .filter(|policy| policy.name == expected.name);
+                .filter(|policy| policy.name == expected.name && policy.namespace == namespace);
             match found {
                 Some(policy) if policy.source == PolicySource::IndependentlyInstalled => Ok(()),
                 _ => Err(WorkloadViolation::AdmissionPolicyNotIndependent {
@@ -1350,10 +1538,9 @@ pub fn check_policy_trust(
             }
         }
         PolicyKind::Network => {
-            let found = observed
-                .network
-                .iter()
-                .find(|policy| policy.metadata.name == expected.name);
+            let found = observed.network.iter().find(|policy| {
+                policy.metadata.name == expected.name && policy.metadata.namespace == namespace
+            });
             match found {
                 Some(policy) if policy.source == PolicySource::IndependentlyInstalled => Ok(()),
                 _ => Err(WorkloadViolation::NetworkPolicyNotIndependent {

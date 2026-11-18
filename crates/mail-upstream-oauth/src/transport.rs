@@ -124,7 +124,10 @@ impl OAuthRequest {
 }
 
 /// One response from a provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The body of a token response carries the tokens themselves, so the
+/// `Debug` of a response never prints it; it says how long it was.
+#[derive(Clone, PartialEq, Eq)]
 pub struct OAuthResponse {
     /// The status code.
     pub status: u16,
@@ -132,6 +135,19 @@ pub struct OAuthResponse {
     pub headers: Vec<(String, String)>,
     /// The body.
     pub body: Vec<u8>,
+}
+
+impl fmt::Debug for OAuthResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field(
+                "body",
+                &format_args!("[{} bytes redacted]", self.body.len()),
+            )
+            .finish()
+    }
 }
 
 impl OAuthResponse {
@@ -195,4 +211,30 @@ impl std::error::Error for TransportFailure {}
 pub trait OAuthTransport: fmt::Debug + Send + Sync {
     /// Send one request.
     fn send(&self, request: &OAuthRequest) -> Result<OAuthResponse, TransportFailure>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_response_prints_no_body() {
+        let response = OAuthResponse::json(
+            200,
+            &serde_json::json!({
+                "access_token": "the-access-token-SECRET",
+                "refresh_token": "the-refresh-token-SECRET",
+            }),
+        );
+        let printed = format!("{response:?}");
+        assert!(
+            !printed.contains("the-access-token-SECRET"),
+            "the body of a response is credential material: {printed}"
+        );
+        assert!(
+            !printed.contains("the-refresh-token-SECRET"),
+            "the body of a response is credential material: {printed}"
+        );
+        assert!(printed.contains("200"), "the status is shown: {printed}");
+    }
 }

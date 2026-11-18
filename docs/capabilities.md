@@ -64,10 +64,10 @@ Nothing in the third state is emulated. Where a proposal cannot be implemented h
 | Dynamic client registration disabled by default | Implemented as logic | `crates/mail-auth` |
 | The built-in issuer refuses to start without persistent storage | Implemented as logic | `crates/mail-auth` |
 | External-issuer-only mode without the built-in issuer | Implemented as logic | `crates/mail-auth` |
-| Upstream provider onboarding: registration profiles, scope and callback allowlists, account validation | Implemented as logic | `crates/mail-upstream-oauth` (61 tests) |
-| One-time encrypted authenticated handoff, replay and tamper resistant | Implemented as logic | `crates/mail-upstream-oauth` |
-| Provider refresh tokens encrypted at rest and rotated as a compare-and-swap | Implemented as logic | `crates/mail-upstream-oauth`; an interrupted rotation surfaces "needs reauthorization" |
-| Privileged onboarding separated from scoped secret delivery | Implemented as logic | `crates/mail-upstream-oauth` |
+| Upstream provider onboarding: registration profiles, scope and callback allowlists, account validation | Partially implemented as logic | `crates/mail-upstream-oauth`; encrypted transaction consumption is unavailable without atomic cross-instance coordination |
+| Encrypted handoff redemption | **Unavailable, fails closed** | Envelopes are authenticated, but redemption refuses to release payloads without enforceable durable replay protection |
+| Provider refresh tokens encrypted at rest and rotated as a compare-and-swap | Implemented as logic | `crates/mail-upstream-oauth`; recovery fails closed and requires reconciliation or reauthorization without atomic coordination |
+| Scoped secret delivery | **Unavailable, fails closed** | `crates/mail-upstream-oauth` refuses delivery until shared durable connection-level coordination is enforced; escrowed credentials remain untouched |
 | Live provider onboarding and device flow | **Not implemented** | No provider HTTP client is available offline; the device flow is advertised only for providers that support it |
 
 ## Control plane
@@ -107,7 +107,7 @@ Nothing in the third state is emulated. Where a proposal cannot be implemented h
 | A bridge failure affects only its own mailboxes | Implemented and exercised | `crates/mail-bridge` |
 | A runtime requiring root or privileged capabilities is rejected | Implemented and exercised | `crates/mail-bridge` |
 | A real bridge process | **Not implemented** | No container runtime is available |
-| Opt-in durable queue, Tasks and filtered synchronization with fenced ownership and restart recovery | Implemented as logic | `crates/mail-queue` (46 tests); off by default, no inbound raw mail stored by default |
+| Opt-in durable queue, Tasks and filtered synchronization | Implemented as logic | `crates/mail-queue`; off by default, no inbound raw mail stored by default. Fenced state transitions cannot fence an external send after dispatch; unknown outcomes must not be blindly retried |
 | Hidden-change suppression in synchronization | Implemented and exercised | `crates/mail-queue` |
 | Bounded, opt-in, privacy-preserving telemetry that never breaks mail | Implemented as logic | `crates/mail-telemetry` (32 tests) |
 | A metrics exporter | **Not implemented** | The exporter seam exists; no backend and no scrape endpoint |

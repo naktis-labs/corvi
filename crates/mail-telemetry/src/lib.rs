@@ -26,11 +26,12 @@ pub mod buffer;
 pub mod config;
 pub mod event;
 pub mod exporter;
+mod panic_suppression;
 pub mod recorder;
 pub mod testing;
 
 pub use buffer::BoundedEventBuffer;
-pub use config::{DEFAULT_BUFFER_CAPACITY, TelemetryConfig};
+pub use config::{DEFAULT_BUFFER_CAPACITY, MAX_BUFFER_CAPACITY, TelemetryConfig};
 pub use event::{
     Component, Direction, DurationBucket, EventValue, FailureClass, LabelError, LabelKey, LabelSet,
     LabelValue, MetricName, Outcome, Protocol, TelemetryEvent,

@@ -299,6 +299,91 @@ fn a_rootless_runtime_is_accepted() {
 }
 
 #[test]
+fn a_request_for_system_paths_is_refused() {
+    for path in ["/", "/etc", "/var/run"] {
+        let mut value = descriptor_json();
+        value["transport"]["runtime"]["security"] = json!({ "writablePaths": [path] });
+        let descriptor = BridgeDescriptor::from_json(&value).expect("a valid descriptor");
+
+        let error = authorize(&descriptor, &policy())
+            .expect_err("a system path is never the necessary writable state");
+        assert!(
+            matches!(
+                error,
+                TrustError::Profile(ProfileError::WritablePathNotAllowed(_))
+            ),
+            "unexpected error for {path}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn a_request_for_a_socket_path_is_refused() {
+    let mut value = descriptor_json();
+    value["transport"]["runtime"]["security"] =
+        json!({ "writablePaths": ["/var/run/corvi/bridge.sock"] });
+    let descriptor = BridgeDescriptor::from_json(&value).expect("a valid descriptor");
+
+    let error = authorize(&descriptor, &policy())
+        .expect_err("a runtime socket path is never writable state");
+    assert!(
+        matches!(
+            error,
+            TrustError::Profile(ProfileError::WritablePathNotAllowed(_))
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn a_traversal_writable_path_is_refused() {
+    let mut value = descriptor_json();
+    value["transport"]["runtime"]["security"] =
+        json!({ "writablePaths": ["/var/lib/corvi/../etc"] });
+    let descriptor = BridgeDescriptor::from_json(&value).expect("a valid descriptor");
+
+    let error = authorize(&descriptor, &policy()).expect_err("a traversal path is refused");
+    assert!(
+        matches!(
+            error,
+            TrustError::Profile(ProfileError::WritablePathNotAllowed(_))
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn a_narrow_writable_state_path_is_approved_and_carried() {
+    let mut value = descriptor_json();
+    value["transport"]["runtime"]["security"] =
+        json!({ "writablePaths": ["/var/lib/corvi/session"] });
+    let descriptor = BridgeDescriptor::from_json(&value).expect("a valid descriptor");
+
+    let approved = authorize(&descriptor, &policy()).expect("the narrow state path is approved");
+
+    assert_eq!(
+        approved.writable_paths,
+        vec!["/var/lib/corvi/session".to_string()],
+        "the approval states which writable paths were approved"
+    );
+}
+
+#[test]
+fn an_unknown_security_key_is_a_parse_error() {
+    let mut value = descriptor_json();
+    value["transport"]["runtime"]["security"] =
+        json!({ "requiredCapabilites": ["NET_BIND_SERVICE"] });
+
+    let error = BridgeDescriptor::from_json(&value)
+        .expect_err("a typoed security key is refused, never silently ignored");
+
+    assert!(
+        matches!(error, DescriptorError::Parse(_)),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
 fn an_existing_bridge_may_not_request_an_image() {
     let mut value = descriptor_json();
     value["transport"]["runtime"]["mode"] = json!("existing");

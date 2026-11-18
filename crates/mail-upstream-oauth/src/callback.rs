@@ -14,21 +14,32 @@
 
 use crate::error::UpstreamOAuthError;
 use crate::profile::ProviderProfile;
+use url::{Host, Url};
 
 /// Whether a URI names the loopback interface.
 ///
-/// Only the literal loopback addresses count. A hostname is not enough:
-/// "localhost" can be resolved to something else, and the callback of a
-/// native client must stay on the machine that started the flow.
+/// The URI is parsed, not cut apart by hand: the userinfo of a URI is not
+/// its host, and `http://127.0.0.1:80@evil.example/callback` sends the
+/// browser to `evil.example`. A URI with userinfo is refused outright — a
+/// loopback callback has no business carrying credentials in its authority
+/// — and only the literal loopback addresses count. A hostname is not
+/// enough: "localhost" can be resolved to something else, and the callback
+/// of a native client must stay on the machine that started the flow.
 pub fn is_loopback_uri(uri: &str) -> bool {
-    let Some(rest) = uri.strip_prefix("http://") else {
+    let Ok(url) = Url::parse(uri) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, _)| host);
-    matches!(host, "127.0.0.1" | "[::1]" | "::1")
+    if url.scheme() != "http" {
+        return false;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Ipv4(host)) => host.octets() == [127, 0, 0, 1],
+        Some(Host::Ipv6(host)) => host == std::net::Ipv6Addr::LOCALHOST,
+        _ => false,
+    }
 }
 
 /// Whether a URI is an HTTPS URI.

@@ -169,6 +169,19 @@ pub trait GrantStore {
     /// not exist is refused: an authorization code is single use, and
     /// reusing one is the sign of a replay.
     fn exchange_auth_code(&self, code_hash: &str, now: u64) -> StorageResult<AuthCode>;
+    /// Atomically validate both bindings and consume a code. Unsupported stores fail closed.
+    fn exchange_bound_auth_code(
+        &self,
+        _code_hash: &str,
+        _client_id: &str,
+        _redirect_uri: &str,
+        _now: u64,
+    ) -> StorageResult<AuthCode> {
+        Err(crate::error::StorageError::Unsupported(
+            "bound code exchange is unsupported".to_owned(),
+        ))
+    }
+
     /// Store an access-token verifier.
     ///
     /// The record of a token is written once: the grant, the principal,

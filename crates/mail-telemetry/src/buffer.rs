@@ -72,11 +72,18 @@ impl BoundedEventBuffer {
     /// Put a batch back at the front of the buffer, oldest first.
     ///
     /// A batch that could not be delivered stays queued for the next attempt.
-    /// The buffer keeps its capacity, so a permanently failing backend cannot
-    /// grow memory.
+    /// The buffer keeps its capacity: a restore that would exceed it drops
+    /// the oldest events first, exactly as `push` does, so a permanently
+    /// failing backend cannot grow memory through a restored batch either.
+    /// Every event dropped this way is counted in [`Self::dropped_count`].
     pub fn restore(&mut self, batch: Vec<TelemetryEvent>) {
         let mut restored = batch;
         restored.append(&mut self.events);
+        let excess = restored.len().saturating_sub(self.capacity);
+        if excess > 0 {
+            self.dropped += excess as u64;
+            restored.drain(0..excess);
+        }
         self.events = restored;
     }
 }

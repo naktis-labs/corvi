@@ -23,6 +23,82 @@ use url::Url;
 use crate::error::UpstreamOAuthError;
 use crate::transport::{OAuthRequest, OAuthResponse, OAuthTransport};
 
+#[cfg(test)]
+mod debug_redaction {
+    //! A request that is printed must not print what it carries.
+
+    use super::*;
+
+    const SECRET: &str = "the-client-secret-SECRET";
+    const CODE: &str = "the-authorization-code-SECRET";
+    const VERIFIER: &str = "the-code-verifier-SECRET";
+    const REFRESH: &str = "the-refresh-token-SECRET";
+    const DEVICE: &str = "the-device-code-SECRET";
+
+    #[test]
+    fn a_token_exchange_prints_no_credential() {
+        let printed = format!(
+            "{:?}",
+            TokenExchange {
+                token_endpoint: "https://provider.example/token".to_owned(),
+                client_id: "the-client".to_owned(),
+                client_secret: Some(SECRET.to_owned()),
+                redirect_uri: "http://127.0.0.1:8400/callback".to_owned(),
+                code: CODE.to_owned(),
+                code_verifier: VERIFIER.to_owned(),
+                scopes: vec!["mail".to_owned()],
+            }
+        );
+        for secret in [SECRET, CODE, VERIFIER] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+        assert!(
+            printed.contains("the-client"),
+            "the client id is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_refresh_exchange_prints_no_credential() {
+        let printed = format!(
+            "{:?}",
+            RefreshExchange {
+                token_endpoint: "https://provider.example/token".to_owned(),
+                client_id: "the-client".to_owned(),
+                client_secret: Some(SECRET.to_owned()),
+                refresh_token: REFRESH.to_owned(),
+                scopes: Vec::new(),
+            }
+        );
+        for secret in [SECRET, REFRESH] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+        assert!(
+            printed.contains("the-client"),
+            "the client id is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_device_authorization_prints_no_device_code() {
+        let printed = format!(
+            "{:?}",
+            DeviceAuthorization {
+                device_code: DEVICE.to_owned(),
+                user_code: "the-user-code".to_owned(),
+                verification_uri: "https://provider.example/device".to_owned(),
+                expires_in: 600,
+                interval: 5,
+            }
+        );
+        assert!(!printed.contains(DEVICE), "leaked {DEVICE}: {printed}");
+        assert!(
+            printed.contains("the-user-code"),
+            "the code the user types is shown: {printed}"
+        );
+    }
+}
+
 /// The tokens a provider issued.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderTokens {
@@ -111,7 +187,10 @@ pub fn build_authorization_url(
 }
 
 /// The exchange of an authorization code for tokens.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The exchange carries the code, the verifier and the client secret, so
+/// its `Debug` is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenExchange {
     /// The provider's token endpoint.
     pub token_endpoint: String,
@@ -127,6 +206,23 @@ pub struct TokenExchange {
     pub code_verifier: String,
     /// The scopes that were requested.
     pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for TokenExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchange")
+            .field("token_endpoint", &self.token_endpoint)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .field("code", &"[redacted]")
+            .field("code_verifier", &"[redacted]")
+            .field("scopes", &self.scopes)
+            .finish()
+    }
 }
 
 /// Exchange an authorization code for tokens.
@@ -160,7 +256,10 @@ pub fn exchange_authorization_code(
 }
 
 /// The exchange of a refresh token for tokens.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The exchange carries the credential and the client secret, so its
+/// `Debug` is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RefreshExchange {
     /// The provider's token endpoint.
     pub token_endpoint: String,
@@ -172,6 +271,21 @@ pub struct RefreshExchange {
     pub refresh_token: String,
     /// The scopes that were granted.
     pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for RefreshExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshExchange")
+            .field("token_endpoint", &self.token_endpoint)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("refresh_token", &"[redacted]")
+            .field("scopes", &self.scopes)
+            .finish()
+    }
 }
 
 /// Exchange a refresh token for tokens.
@@ -268,7 +382,11 @@ pub fn parse_token_response(
 }
 
 /// The device authorization a provider issued.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The device code is the credential the client polls with, so the `Debug`
+/// of the authorization is manual. The user code is the code the user
+/// types; it is shown to the user by design.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceAuthorization {
     /// The code the client polls with.
     pub device_code: String,
@@ -280,6 +398,18 @@ pub struct DeviceAuthorization {
     pub expires_in: u64,
     /// The polling interval the provider asks for.
     pub interval: u64,
+}
+
+impl std::fmt::Debug for DeviceAuthorization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceAuthorization")
+            .field("device_code", &"[redacted]")
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("expires_in", &self.expires_in)
+            .field("interval", &self.interval)
+            .finish()
+    }
 }
 
 /// The default polling interval of RFC 8628.

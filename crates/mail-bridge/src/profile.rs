@@ -68,6 +68,50 @@ pub enum ProfileError {
     NonDefaultSeccomp(Option<String>),
     /// The runtime insists on a Kubernetes API token.
     ApiTokenRequired,
+    /// The runtime insists on writing outside the bridge's writable state.
+    WritablePathNotAllowed(String),
+}
+
+/// The paths a managed bridge may ask to write to.
+///
+/// ADR-0006 section 3 grants "only the necessary writable state". The
+/// allowlist is deliberately small: the bridge's own state directory, which
+/// the operator mounts for it.
+const ALLOWED_WRITABLE_PATHS: &[&str] = &["/var/lib/corvi"];
+
+/// The system roots a writable path may never touch, even by accident.
+///
+/// These are refused before the allowlist is consulted, so a later change to
+/// the allowlist cannot silently admit a runtime socket directory or a system
+/// root.
+const FORBIDDEN_WRITABLE_PREFIXES: &[&str] = &[
+    "/etc", "/proc", "/sys", "/dev", "/run", "/var/run", "/usr", "/bin", "/sbin", "/lib", "/boot",
+    "/root", "/home",
+];
+
+/// Whether a requested writable path is inside the bridge's own state.
+///
+/// A path is refused unless it is exactly an allowlisted directory or below
+/// one, is absolute, carries no `..` component, and names no runtime socket.
+fn writable_path_allowed(path: &str) -> bool {
+    if !path.starts_with('/') || path == "/" {
+        return false;
+    }
+    if path.split('/').any(|component| component == "..") {
+        return false;
+    }
+    if path.ends_with(".sock") || path.contains(".sock/") {
+        return false;
+    }
+    let touches_system_root = FORBIDDEN_WRITABLE_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
+    if touches_system_root {
+        return false;
+    }
+    ALLOWED_WRITABLE_PATHS
+        .iter()
+        .any(|allowed| path == *allowed || path.starts_with(&format!("{allowed}/")))
 }
 
 impl fmt::Display for ProfileError {
@@ -93,6 +137,10 @@ impl fmt::Display for ProfileError {
             ProfileError::ApiTokenRequired => {
                 write!(formatter, "the runtime requires a Kubernetes API token")
             }
+            ProfileError::WritablePathNotAllowed(path) => write!(
+                formatter,
+                "the runtime requires a writable path {path:?}, which the mandatory profile does not allow"
+            ),
         }
     }
 }
@@ -122,6 +170,11 @@ pub fn validate_requirements(requirements: &SecurityRequirements) -> Result<(), 
     match requirements.seccomp_profile.as_deref() {
         None | Some(SECCOMP_PROFILE) => {}
         Some(profile) => return Err(ProfileError::NonDefaultSeccomp(Some(profile.to_string()))),
+    }
+    for path in &requirements.writable_paths {
+        if !writable_path_allowed(path) {
+            return Err(ProfileError::WritablePathNotAllowed(path.clone()));
+        }
     }
 
     Ok(())

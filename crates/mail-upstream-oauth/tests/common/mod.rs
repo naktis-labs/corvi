@@ -181,10 +181,13 @@ pub fn query(url: &str, name: &str) -> String {
 }
 
 /// An encrypted secret store at a unique path.
+///
+/// The directory is not created here: the secret store creates the
+/// directories it lives in with owner-only permissions, and a directory
+/// made with the default umask would be refused.
 pub fn secret_store(name: &str) -> (EncryptedFileSecretStore, std::path::PathBuf) {
     let directory =
         std::env::temp_dir().join(format!("corvi-upstream-oauth-{name}-{}", unique_suffix()));
-    std::fs::create_dir_all(&directory).expect("the test directory is created");
     let path = directory.join("secrets.enc");
     let store = EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1")
         .expect("the secret store opens");
@@ -197,10 +200,18 @@ pub fn connection_store() -> Arc<SqliteStore> {
 }
 
 /// Random suffix for a test directory.
+///
+/// The suffix is unique per call inside this process, and unique per
+/// process across runs: two tests that start within the same nanosecond
+/// must not race on one secret-store directory.
 fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos().to_string())
-        .unwrap_or_default()
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{call}-{started}", std::process::id())
 }

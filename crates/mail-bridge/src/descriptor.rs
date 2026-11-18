@@ -204,9 +204,10 @@ pub struct PortHint {
 ///
 /// A descriptor may only ask for a profile that is at least as strict as the
 /// mandatory rootless profile. Every field here is a *request*; the enforced
-/// profile is decided locally.
+/// profile is decided locally. Unknown keys are refused: a typoed request is
+/// a change of meaning, not an empty default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecurityRequirements {
     /// Whether the runtime insists on running as root.
     #[serde(default)]

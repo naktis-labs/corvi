@@ -132,16 +132,17 @@ impl<'a> RegistrationRegistry<'a> {
             confidential: false,
         };
         self.state.put_client(&record)?;
+        // The registration is stored with its policy, so a restarted
+        // issuer still knows what the client registered for.
+        let policy = ClientPolicy {
+            client_id: client_id.clone(),
+            grant_types,
+            allowed_actions: Action::ALL.to_vec(),
+            allowed_identity_ids: Vec::new(),
+        };
+        self.state.put_client_policy(&policy)?;
         self.registrations += 1;
-        Ok(RegisteredClient {
-            record,
-            policy: ClientPolicy {
-                client_id,
-                grant_types,
-                allowed_actions: Action::ALL.to_vec(),
-                allowed_identity_ids: Vec::new(),
-            },
-        })
+        Ok(RegisteredClient { record, policy })
     }
 
     /// Refuse a burst of registrations.

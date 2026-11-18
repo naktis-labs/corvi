@@ -315,13 +315,42 @@ impl SqliteStore {
         if destination_ledger != ledger.path() {
             if destination_ledger.exists() {
                 let existing = RevocationLedger::open(&destination_ledger)?;
-                let existing_head = existing.head()?;
+                let existing_entries = existing.entries()?;
+                let existing_head = existing_entries
+                    .last()
+                    .map(|entry| entry.sequence)
+                    .unwrap_or(0);
                 if existing_head > head {
                     return Err(StorageError::Conflict(format!(
                         "the ledger {} holds revocations up to sequence {existing_head} but the \
                          backup holds {head}; restoring it would lose revocations",
                         destination_ledger.display()
                     )));
+                }
+                // Length is not agreement. A ledger of the same length
+                // whose entries are not the ones the restore installs has
+                // diverged: it holds revocations of its own that the
+                // restore would silently replace with the backup's
+                // ledger. The restore is refused rather than performing
+                // that substitution.
+                for entry in &existing_entries {
+                    let agrees = entries
+                        .iter()
+                        .find(|candidate| candidate.sequence == entry.sequence)
+                        .is_some_and(|candidate| {
+                            candidate.subject == entry.subject
+                                && candidate.kind == entry.kind
+                                && candidate.at == entry.at
+                        });
+                    if !agrees {
+                        return Err(StorageError::Conflict(format!(
+                            "the ledger {} holds the revocation of {} at sequence {}, which the \
+                             ledger of the backup does not; restoring it would lose revocations",
+                            destination_ledger.display(),
+                            entry.subject,
+                            entry.sequence
+                        )));
+                    }
                 }
             }
             // The restored database is installed together with the ledger it
@@ -814,8 +843,22 @@ impl GrantStore for SqliteStore {
     }
 
     fn put_grant(&self, grant: &Grant) -> StorageResult<()> {
-        let connection = self.lock()?;
-        connection
+        self.catch_up_revocations()?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        // Whether the grant was already revoked decides whether the
+        // revocation this record carries is a fact or a repetition of one.
+        let was_revoked: Option<Option<i64>> = transaction
+            .query_row(
+                "SELECT revoked_at FROM grants WHERE grant_id = ?1",
+                params![grant.grant_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        transaction
             .execute(
                 "INSERT INTO grants (grant_id, client_id, principal, identity, scopes, revision, created_at, revoked_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -838,6 +881,25 @@ impl GrantStore for SqliteStore {
                     grant.revoked_at.map(|at| at as i64),
                 ],
             )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        // A record that arrives already revoked is a revocation like any
+        // other: it goes into the ledger, so a restore of a backup that
+        // predates this write cannot bring the grant back as if it were
+        // still consented. The ledger is written before the transaction
+        // commits, so a crash in between leaves the database *behind* the
+        // ledger, which is the safe direction.
+        if was_revoked.flatten().is_none() {
+            if let Some(revoked_at) = grant.revoked_at {
+                self.record_revocation(
+                    &transaction,
+                    &grant.grant_id,
+                    RevocationKind::Grant.as_str(),
+                    revoked_at,
+                )?;
+            }
+        }
+        transaction
+            .commit()
             .map_err(|error| StorageError::Backend(error.to_string()))?;
         Ok(())
     }
@@ -995,6 +1057,68 @@ impl GrantStore for SqliteStore {
         })
     }
 
+    fn exchange_bound_auth_code(
+        &self,
+        code_hash: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        now: u64,
+    ) -> StorageResult<AuthCode> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let code = transaction
+            .query_row(
+                "SELECT code_hash, client_id, redirect_uri, principal, scopes, expires_at, used_at
+                 FROM auth_codes WHERE code_hash = ?1",
+                params![code_hash],
+                |row| {
+                    let scopes: String = row.get(4)?;
+                    Ok(AuthCode {
+                        code_hash: row.get(0)?,
+                        client_id: row.get(1)?,
+                        redirect_uri: row.get(2)?,
+                        principal: row.get(3)?,
+                        scopes: decode_list(&scopes),
+                        expires_at: row.get::<_, i64>(5)? as u64,
+                        used_at: row.get::<_, Option<i64>>(6)?.map(|at| at as u64),
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?
+            .ok_or_else(|| StorageError::NotFound("the authorization code".to_owned()))?;
+        if code.client_id != client_id || code.redirect_uri != redirect_uri {
+            return Err(StorageError::Conflict(
+                "authorization code binding mismatch".to_owned(),
+            ));
+        }
+        if code.used_at.is_some() {
+            return Err(StorageError::Conflict(
+                "the authorization code was already exchanged".to_owned(),
+            ));
+        }
+        if code.expires_at <= now {
+            return Err(StorageError::Conflict(
+                "the authorization code has expired".to_owned(),
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE auth_codes SET used_at = ?2 WHERE code_hash = ?1 AND used_at IS NULL",
+                params![code_hash, now as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        transaction
+            .commit()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(AuthCode {
+            used_at: Some(now),
+            ..code
+        })
+    }
+
     fn put_access_token(&self, token: &AccessToken) -> StorageResult<()> {
         self.catch_up_revocations()?;
         let mut connection = self.lock()?;
@@ -1081,7 +1205,10 @@ impl GrantStore for SqliteStore {
             return Ok(None);
         }
         // The grant of the token decides as well: a token of a revoked
-        // grant is not a token.
+        // grant is not a token, and neither is a token whose grant row is
+        // gone. A missing grant cannot be told apart from a grant this
+        // database never held, so the lookup fails closed rather than
+        // letting a token outlive the record of what authorized it.
         let grant_revoked = connection
             .query_row(
                 "SELECT revoked_at FROM grants WHERE grant_id = ?1",
@@ -1090,7 +1217,7 @@ impl GrantStore for SqliteStore {
             )
             .optional()
             .map_err(|error| StorageError::Backend(error.to_string()))?;
-        if grant_revoked.flatten().is_some() {
+        if grant_revoked.is_none() || grant_revoked.flatten().is_some() {
             return Ok(None);
         }
         drop(connection);
@@ -1112,8 +1239,20 @@ impl GrantStore for SqliteStore {
     }
 
     fn put_refresh_family(&self, family: &RefreshFamily) -> StorageResult<()> {
-        let connection = self.lock()?;
-        connection
+        self.catch_up_revocations()?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let was_revoked: Option<Option<i64>> = transaction
+            .query_row(
+                "SELECT revoked_at FROM refresh_families WHERE family_id = ?1",
+                params![family.family_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        transaction
             .execute(
                 "INSERT INTO refresh_families (family_id, grant_id, generation, current_token_hash, rotated_at, revoked_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1132,6 +1271,22 @@ impl GrantStore for SqliteStore {
                     family.revoked_at.map(|at| at as i64),
                 ],
             )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        // As with a grant: a record that arrives already revoked is a
+        // revocation, and it is written down where a restore cannot make
+        // it disappear.
+        if was_revoked.flatten().is_none() {
+            if let Some(revoked_at) = family.revoked_at {
+                self.record_revocation(
+                    &transaction,
+                    &family.family_id,
+                    RevocationKind::RefreshFamily.as_str(),
+                    revoked_at,
+                )?;
+            }
+        }
+        transaction
+            .commit()
             .map_err(|error| StorageError::Backend(error.to_string()))?;
         Ok(())
     }
@@ -1415,10 +1570,10 @@ impl ProviderConnectionStore for SqliteStore {
             )
             .optional()
             .map_err(|error| StorageError::Backend(error.to_string()))?;
-        if let Some((claim_owner, claim_generation)) = existing {
+        if let Some((_claim_owner, claim_generation)) = existing {
             if claim_generation as u64 == generation {
-                // Somebody already holds this generation.
-                return Ok(claim_owner == owner);
+                // Even the same owner may have another refresh in flight.
+                return Ok(false);
             }
             if claim_generation as u64 > generation {
                 return Ok(false);
@@ -1432,6 +1587,80 @@ impl ProviderConnectionStore for SqliteStore {
                      owner = excluded.owner,
                      generation = excluded.generation",
                 params![connection_id, owner, 0_i64, generation as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        transaction
+            .commit()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(true)
+    }
+
+    /// Claim the right to refresh a connection, with a clock.
+    ///
+    /// A claim is not automatically taken over: the original worker may
+    /// still be performing an irreversible external refresh.
+    fn claim_refresh_at(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        owner: &str,
+        now: u64,
+        _ttl: u64,
+    ) -> StorageResult<bool> {
+        let mut guard = self.lock()?;
+        let transaction = guard
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let current = transaction
+            .query_row(
+                "SELECT generation FROM provider_connections WHERE connection_id = ?1",
+                params![connection_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if current as u64 != generation {
+            return Ok(false);
+        }
+        // A claim is bound to the generation it was taken at. A claim of an
+        // earlier generation is stale, because the credential moved on, and
+        // it does not stop the owner of the current generation from
+        // claiming.
+        let existing = transaction
+            .query_row(
+                "SELECT owner, generation, claimed_at FROM refresh_claims WHERE connection_id = ?1",
+                params![connection_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        if let Some((_claim_owner, claim_generation, _claimed_at)) = existing {
+            if claim_generation as u64 == generation {
+                // Neither expiry nor an owner name proves the rotation has stopped.
+                return Ok(false);
+            }
+            if claim_generation as u64 > generation {
+                return Ok(false);
+            }
+        }
+        transaction
+            .execute(
+                "INSERT INTO refresh_claims (connection_id, owner, claimed_at, generation)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(connection_id) DO UPDATE SET
+                     owner = excluded.owner,
+                     claimed_at = excluded.claimed_at,
+                     generation = excluded.generation",
+                params![connection_id, owner, now as i64, generation as i64],
             )
             .map_err(|error| StorageError::Backend(error.to_string()))?;
         transaction
@@ -1668,6 +1897,26 @@ impl MailboxStateStore for SqliteStore {
         Ok(upstream)
     }
 
+    fn lookup_public_id(
+        &self,
+        identity: &str,
+        kind: OpaqueKind,
+        upstream_id: &str,
+    ) -> StorageResult<Option<String>> {
+        let guard = self.lock()?;
+        let public_id = guard
+            .query_row(
+                "SELECT public_id FROM opaque_ids
+                 WHERE identity = ?1 AND kind = ?2 AND upstream_id = ?3
+                 ORDER BY public_id LIMIT 1",
+                params![identity, kind.as_str(), upstream_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(public_id)
+    }
+
     fn acquire_lease(
         &self,
         name: &str,
@@ -1752,7 +2001,13 @@ impl SubmissionStore for SqliteStore {
             || submission.identity != reservation.identity
             || submission.client_id != reservation.client_id
             || submission.idempotency_key.as_deref() != Some(reservation.key.as_str())
-            || submission.payload_digest.as_deref() != Some(reservation.payload_digest.as_str())
+            // The reservation records the payload digest as a plain string,
+            // so a keyed submission without a payload is recorded there as
+            // the empty string. The submission records the absence of a
+            // payload as NULL. The two spellings mean the same intent, and
+            // anything else — a reservation that names a payload the
+            // submission does not carry, or the reverse — is refused.
+            || submission.payload_digest.as_deref().unwrap_or_default() != reservation.payload_digest
         {
             return Err(StorageError::Invalid(
                 "the reservation and submission intent do not match".to_owned(),
@@ -2061,6 +2316,85 @@ impl SubmissionStore for SqliteStore {
             .map_err(|error| StorageError::Backend(error.to_string()))?;
         drop(guard);
         self.get_submission(&id)
+    }
+
+    /// Renew the claim of a submission under its fencing token.
+    ///
+    /// The renewal extends the claim's expiry without changing its owner
+    /// or its fencing token, so a worker that is still working keeps the
+    /// item while a worker whose token is stale is refused.
+    fn renew_claim(&self, id: &str, fencing_token: u64, now: u64, ttl: u64) -> StorageResult<bool> {
+        let guard = self.lock()?;
+        let changed = guard
+            .execute(
+                "UPDATE submissions
+                 SET lease_expires_at = ?3, updated_at = ?4
+                 WHERE id = ?1 AND fencing_token = ?2",
+                params![id, fencing_token as i64, (now + ttl) as i64, now as i64],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        Ok(changed > 0)
+    }
+
+    /// Move a claimed submission to a new state under its fencing token.
+    ///
+    /// The write carries the token the claim was taken with, so a worker
+    /// whose claim was taken over cannot mark the item as dispatched: the
+    /// row no longer matches its token, and the write is refused.
+    fn transition_claimed(
+        &self,
+        id: &str,
+        fencing_token: u64,
+        state: SubmissionState,
+        now: u64,
+        failure_code: Option<String>,
+    ) -> StorageResult<Submission> {
+        let mut guard = self.lock()?;
+        let transaction = guard
+            .transaction()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        let current = transaction
+            .query_row(
+                "SELECT state FROM submissions WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StorageError::Backend(error.to_string()))?
+            .ok_or_else(|| StorageError::NotFound(format!("the submission {id}")))?;
+        let current = SubmissionState::parse(&current).unwrap_or(SubmissionState::Failed);
+        // The state machine is monotonic here exactly as it is for the
+        // unfenced transition.
+        if !current.may_move_to(state) {
+            return Err(StorageError::Conflict(
+                "the submission state cannot move backwards".to_owned(),
+            ));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE submissions
+                 SET state = ?2, updated_at = ?3, failure_code = ?4
+                 WHERE id = ?1 AND fencing_token = ?5",
+                params![
+                    id,
+                    state.as_str(),
+                    now as i64,
+                    failure_code,
+                    fencing_token as i64
+                ],
+            )
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        if changed == 0 {
+            return Err(StorageError::Conflict(
+                "the claim was taken over by another worker".to_owned(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|error| StorageError::Backend(error.to_string()))?;
+        drop(guard);
+        let submission = self.get_submission(id)?;
+        submission.ok_or_else(|| StorageError::NotFound(format!("the submission {id}")))
     }
 
     fn release_claim(

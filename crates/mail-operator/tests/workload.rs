@@ -8,7 +8,7 @@ use mail_operator::model::{AuthorizationMode, ParseError, StateBackend, parse_ga
 use mail_operator::workload::{
     AdmissionPolicy, IpBlock, IpFamily, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyPeer,
     NetworkPolicyPort, ObservedPolicies, PolicyExpectation, PolicySource, PolicyType, RenderError,
-    Workload, WorkloadViolation, render_gateway_workload, validate_network_policy,
+    VolumeSource, Workload, WorkloadViolation, render_gateway_workload, validate_network_policy,
     validate_workload,
 };
 
@@ -287,12 +287,13 @@ fn an_operator_derived_admission_policy_is_not_trusted() {
     let observed = ObservedPolicies {
         admission: Some(AdmissionPolicy {
             name: "corvi-restricted-workload".to_owned(),
+            namespace: common::NS.to_owned(),
             source: PolicySource::OperatorDerived,
         }),
         network: vec![policy_with_dns(&[IpFamily::V4, IpFamily::V6])],
     };
 
-    let error = mail_operator::workload::check_policy_trust(&expected, &observed)
+    let error = mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
         .expect_err("the operator's own policy is not a boundary");
 
     assert_eq!(
@@ -313,12 +314,13 @@ fn a_missing_network_policy_is_reported_and_never_replaced() {
     let observed = ObservedPolicies {
         admission: Some(AdmissionPolicy {
             name: "corvi-restricted-workload".to_owned(),
+            namespace: common::NS.to_owned(),
             source: PolicySource::IndependentlyInstalled,
         }),
         network: Vec::new(),
     };
 
-    let error = mail_operator::workload::check_policy_trust(&expected, &observed)
+    let error = mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
         .expect_err("a missing default-deny policy is reported");
 
     assert_eq!(
@@ -376,6 +378,129 @@ fn a_rendered_workload_passes_its_own_validation() {
 }
 
 #[test]
+fn a_same_named_policy_in_another_namespace_is_not_trusted() {
+    let expected = PolicyExpectation {
+        name: "corvi-gateway-default-deny".to_owned(),
+        kind: mail_operator::workload::PolicyKind::Network,
+        source: PolicySource::IndependentlyInstalled,
+    };
+    let mut policy = policy_with_dns(&[IpFamily::V4, IpFamily::V6]);
+    policy.metadata.namespace = "somewhere-else".to_owned();
+    let observed = ObservedPolicies {
+        admission: None,
+        network: vec![policy],
+    };
+
+    let error = mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
+        .expect_err("a same-named policy in another namespace enforces nothing here");
+
+    assert_eq!(
+        error,
+        WorkloadViolation::NetworkPolicyNotIndependent {
+            name: "corvi-gateway-default-deny".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn a_same_named_admission_policy_in_another_namespace_is_not_trusted() {
+    let expected = PolicyExpectation {
+        name: "corvi-restricted-workload".to_owned(),
+        kind: mail_operator::workload::PolicyKind::Admission,
+        source: PolicySource::IndependentlyInstalled,
+    };
+    let observed = ObservedPolicies {
+        admission: Some(AdmissionPolicy {
+            name: "corvi-restricted-workload".to_owned(),
+            namespace: "somewhere-else".to_owned(),
+            source: PolicySource::IndependentlyInstalled,
+        }),
+        network: Vec::new(),
+    };
+
+    let error = mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
+        .expect_err("a same-named admission policy in another namespace is not a boundary");
+
+    assert_eq!(
+        error,
+        WorkloadViolation::AdmissionPolicyNotIndependent {
+            name: "corvi-restricted-workload".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn a_policy_in_the_workloads_namespace_is_trusted() {
+    let expected = PolicyExpectation {
+        name: "corvi-gateway-default-deny".to_owned(),
+        kind: mail_operator::workload::PolicyKind::Network,
+        source: PolicySource::IndependentlyInstalled,
+    };
+    let observed = ObservedPolicies {
+        admission: Some(AdmissionPolicy {
+            name: "corvi-restricted-workload".to_owned(),
+            namespace: common::NS.to_owned(),
+            source: PolicySource::IndependentlyInstalled,
+        }),
+        network: vec![policy_with_dns(&[IpFamily::V4, IpFamily::V6])],
+    };
+
+    mail_operator::workload::check_policy_trust(&expected, &observed, common::NS)
+        .expect("a policy in the workload's namespace satisfies the expectation");
+}
+
+#[test]
+fn a_sqlite_gateway_mounts_its_state_volume_at_a_durable_path() {
+    let gateway = gateway_with(1, StateBackend::Sqlite, AuthorizationMode::External);
+
+    let workload = render_gateway_workload(&gateway, &profile()).expect("the gateway renders");
+
+    let pod = workload.pod_spec();
+    let mounts = &pod.containers[0].volume_mounts;
+    for volume in &pod.volumes {
+        assert!(
+            mounts.iter().any(|mount| mount.name == volume.name),
+            "volume {} is declared but never mounted: {mounts:?}",
+            volume.name
+        );
+    }
+    let state = mounts
+        .iter()
+        .find(|mount| mount.name == "state")
+        .expect("the SQLite gateway mounts its state volume");
+    assert_eq!(
+        state.mount_path, "/var/lib/corvi",
+        "SQLite state needs a dedicated durable path, not the read-only root or /tmp"
+    );
+    assert!(!state.read_only, "SQLite state must be writable");
+}
+
+#[test]
+fn the_authorization_secret_is_rendered_as_a_mounted_volume() {
+    let workload = render_gateway_workload(&gateway(), &profile()).expect("the gateway renders");
+
+    let pod = workload.pod_spec();
+    let volume = pod
+        .volumes
+        .iter()
+        .find(|volume| volume.name == "auth")
+        .expect("the authorization secret is rendered as a volume");
+    match &volume.source {
+        VolumeSource::Secret { secret_name, .. } => {
+            assert_eq!(secret_name, "corvi-resource-server");
+        }
+        other => panic!("unexpected volume source {other:?}"),
+    }
+
+    let mount = pod.containers[0]
+        .volume_mounts
+        .iter()
+        .find(|mount| mount.name == "auth")
+        .expect("the authorization secret is mounted");
+    assert!(mount.read_only, "a secret is never mounted writable");
+}
+
+#[test]
 fn the_rendered_workload_names_the_gateway_deterministically() {
     let workload = render_gateway_workload(&gateway(), &profile()).expect("the gateway renders");
 
@@ -390,5 +515,78 @@ fn the_rendered_workload_names_the_gateway_deterministically() {
             assert_eq!(stateful_set.api_version, "apps/v1");
             assert_eq!(stateful_set.kind, "StatefulSet");
         }
+    }
+}
+
+#[test]
+fn serialized_pod_uses_kubernetes_security_field_names() {
+    let workload = render_gateway_workload(&gateway(), &profile()).unwrap();
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&workload.to_yaml()).unwrap();
+    let pod = &yaml["spec"]["template"]["spec"];
+    assert_eq!(pod["hostPID"].as_bool(), Some(false));
+    assert_eq!(pod["hostIPC"].as_bool(), Some(false));
+    assert!(pod.get("hostPid").is_none());
+    assert!(pod.get("hostIpc").is_none());
+    for security in [
+        &pod["securityContext"],
+        &pod["containers"][0]["securityContext"],
+    ] {
+        assert_eq!(
+            security["seccompProfile"]["type"].as_str(),
+            Some("RuntimeDefault")
+        );
+        assert!(security["seccompProfile"].get("kind").is_none());
+    }
+}
+
+#[test]
+fn sqlite_gateway_selectors_match_only_their_own_templates() {
+    let first = gateway_with(1, StateBackend::Sqlite, AuthorizationMode::External);
+    let mut second = first.clone();
+    second.metadata.name = "secondary".to_owned();
+    let first = render_gateway_workload(&first, &profile()).unwrap();
+    let second = render_gateway_workload(&second, &profile()).unwrap();
+    let (Workload::StatefulSet(first), Workload::StatefulSet(second)) = (first, second) else {
+        panic!("expected StatefulSets")
+    };
+    let matches = |selector: &mail_operator::workload::LabelSelector,
+                   labels: &std::collections::BTreeMap<String, String>| {
+        selector
+            .match_labels
+            .iter()
+            .all(|(key, value)| labels.get(key) == Some(value))
+    };
+    assert!(matches(
+        &first.spec.selector,
+        &first.spec.template.metadata.labels
+    ));
+    assert!(matches(
+        &second.spec.selector,
+        &second.spec.template.metadata.labels
+    ));
+    assert!(!matches(
+        &first.spec.selector,
+        &second.spec.template.metadata.labels
+    ));
+    assert!(!matches(
+        &second.spec.selector,
+        &first.spec.template.metadata.labels
+    ));
+}
+
+#[test]
+fn rendered_rollout_strategies_use_kubernetes_type_field() {
+    for (gateway, field) in [
+        (gateway(), "strategy"),
+        (
+            gateway_with(1, StateBackend::Sqlite, AuthorizationMode::External),
+            "updateStrategy",
+        ),
+    ] {
+        let workload = render_gateway_workload(&gateway, &profile()).unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&workload.to_yaml()).unwrap();
+        let strategy = &yaml["spec"][field];
+        assert_eq!(strategy["type"].as_str(), Some("RollingUpdate"), "{field}");
+        assert!(strategy.get("kind").is_none(), "{field}");
     }
 }

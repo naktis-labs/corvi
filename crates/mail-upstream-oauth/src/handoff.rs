@@ -34,7 +34,7 @@ pub const MAX_HANDOFF_TTL_SECONDS: u64 = 600;
 pub const MIN_HANDOFF_KEY_BYTES: usize = 16;
 
 /// The key derivation context of a handoff.
-const KEY_INFO: &str = "corvi-upstream-oauth-handoff/v1";
+const KEY_INFO: &str = "corvi-upstream-oauth-handoff/v2";
 
 /// The credential a companion CLI hands over.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,28 +100,47 @@ impl fmt::Debug for HandoffEnvelope {
 }
 
 /// What keeps an identifier from being used twice.
+///
+/// This is the **durable-guard seam**. The redemption's replay state lives
+/// behind this trait, and what an implementation must promise is spelled
+/// out here because a wrong implementation is invisible: a deployment that
+/// redeems envelopes in more than one process with a guard that only one
+/// process can see has no replay protection across those processes at all.
+/// A deployment that redeems in several processes must supply a guard
+/// whose used-identifiers are shared and durable — a table in the
+/// transactional store of ADR-0010, not an in-process map.
 pub trait OneTimeUseGuard: fmt::Debug + Send + Sync {
     /// Mark an identifier as used.
     ///
     /// The answer is `false` when the identifier was already used, which
-    /// is how a replay is refused.
+    /// is how a replay is refused. The record of a used identifier must
+    /// survive at least as long as the longest envelope lifetime, in every
+    /// process that can redeem.
     fn consume(&self, id: &str, now: u64) -> Result<bool, UpstreamOAuthError>;
 }
 
-/// A guard that keeps the used identifiers in memory.
+/// A guard that keeps the used identifiers in the memory of one process.
+///
+/// This guard is **single-process by construction**: its map lives in this
+/// process, so a second process — or a restart of this one — has its own
+/// empty map, and an envelope redeemed there is a replay this guard cannot
+/// see. Use it where exactly one process redeems and a restart between the
+/// issue and the redemption of an envelope is not a threat the deployment
+/// needs to answer. Every other deployment implements
+/// [`OneTimeUseGuard`] over durable, shared state instead.
 #[derive(Debug, Default)]
-pub struct MemoryOneTimeUseGuard {
+pub struct SingleProcessOneTimeUseGuard {
     used: Mutex<BTreeMap<String, u64>>,
 }
 
-impl MemoryOneTimeUseGuard {
+impl SingleProcessOneTimeUseGuard {
     /// A guard that has not seen anything yet.
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl OneTimeUseGuard for MemoryOneTimeUseGuard {
+impl OneTimeUseGuard for SingleProcessOneTimeUseGuard {
     fn consume(&self, id: &str, now: u64) -> Result<bool, UpstreamOAuthError> {
         let mut used = self.used.lock().map_err(|_| UpstreamOAuthError::Storage {
             reason: "the one-time guard lock is poisoned".to_owned(),
@@ -134,11 +153,38 @@ impl OneTimeUseGuard for MemoryOneTimeUseGuard {
     }
 }
 
+/// The lifetime an envelope must sit in to be redeemed.
+///
+/// The expiry is inside the authenticated data, so it cannot be moved. The
+/// issuance moment is not, so it is checked instead of trusted: a
+/// deployment chooses the floor, and an envelope issued before it — one
+/// this deployment never made, or one from before a key or channel
+/// rotation — is refused without being opened. An envelope whose issuance
+/// moment is in the future is refused for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffLifetime {
+    /// Envelopes issued before this moment are refused. The floor is
+    /// inclusive: an envelope issued at the floor is inside the window.
+    pub issued_at_floor: u64,
+}
+
+impl HandoffLifetime {
+    /// The widest window: every envelope that has not expired is accepted.
+    pub fn unbounded() -> Self {
+        Self { issued_at_floor: 0 }
+    }
+
+    /// A window that begins at the given moment.
+    pub fn since(issued_at_floor: u64) -> Self {
+        Self { issued_at_floor }
+    }
+}
+
 /// The context an envelope is bound to.
 fn aad(envelope: &HandoffEnvelope) -> Vec<u8> {
     format!(
-        "{KEY_INFO}\nrecipient={}\nenvelope={}\nexpires_at={}",
-        envelope.recipient, envelope.envelope_id, envelope.expires_at
+        "{KEY_INFO}\nrecipient={}\nenvelope={}\nissued_at={}\nexpires_at={}",
+        envelope.recipient, envelope.envelope_id, envelope.issued_at, envelope.expires_at
     )
     .into_bytes()
 }
@@ -210,22 +256,28 @@ pub fn issue_handoff(
     Ok(envelope)
 }
 
-/// Open an envelope and take the credential out of it.
+/// Validate an envelope, but refuse redemption without durable replay protection.
 ///
-/// The order matters: the expiry and the recipient are checked first, the
-/// ciphertext is authenticated next, and only a payload that authenticated
-/// is allowed to consume the one-time identifier. A tampered envelope
-/// therefore never burns the identifier of a legitimate one.
+/// Lifetime, recipient and ciphertext authentication are checked without
+/// consuming the identifier. Even an authenticated envelope is refused and
+/// its payload is not released: the guard interface cannot enforce shared
+/// durable replay protection across processes or restarts.
 pub fn redeem_handoff(
     envelope: &HandoffEnvelope,
     shared_key: &[u8],
     recipient: &str,
     now: u64,
+    lifetime: &HandoffLifetime,
     guard: &dyn OneTimeUseGuard,
 ) -> Result<HandoffPayload, UpstreamOAuthError> {
     if now > envelope.expires_at {
         return Err(UpstreamOAuthError::HandoffRejected {
             reason: HandoffFailure::Expired,
+        });
+    }
+    if envelope.issued_at > now || envelope.issued_at < lifetime.issued_at_floor {
+        return Err(UpstreamOAuthError::HandoffRejected {
+            reason: HandoffFailure::Unknown,
         });
     }
     if envelope.recipient != recipient {
@@ -264,10 +316,10 @@ pub fn redeem_handoff(
             reason: HandoffFailure::Tampered,
         }
     })?;
-    if !guard.consume(&envelope.envelope_id, now)? {
-        return Err(UpstreamOAuthError::HandoffRejected {
-            reason: HandoffFailure::Replayed,
-        });
-    }
-    Ok(payload)
+    // No available guard implementation can enforce shared durable replay
+    // protection through this interface, so authenticated payloads are not released.
+    let _ = (guard, payload);
+    Err(UpstreamOAuthError::Storage {
+        reason: "handoff redemption requires enforced durable replay protection".to_owned(),
+    })
 }

@@ -88,8 +88,82 @@ fn the_proto_status_allowlist_matches_the_rust_vocabulary() {
 fn the_proto_states_the_message_limit_the_rust_types_enforce() {
     assert_eq!(MAX_EXECUTE_PAYLOAD_BYTES, 1_048_576);
     assert_eq!(MAX_SNAPSHOT_BYTES, 1_048_576);
-    assert!(PROVIDER_PROTO.contains("1048576"));
-    assert!(CONFIG_PROTO.contains("1048576"));
+    // The limit is bound to the field the contract actually bounds, not to a
+    // number that may appear anywhere in the file: the comment on the bounded
+    // field must state exactly what the Rust type enforces.
+    assert_eq!(
+        declared_byte_limit(PROVIDER_PROTO, "message ExecuteRequest", "bounded_payload"),
+        MAX_EXECUTE_PAYLOAD_BYTES,
+        "the ExecuteRequest field comment and the Rust limit must agree"
+    );
+    assert_eq!(
+        declared_byte_limit(PROVIDER_PROTO, "message ExecuteResponse", "bounded_payload"),
+        MAX_EXECUTE_PAYLOAD_BYTES,
+        "the ExecuteResponse field comment and the Rust limit must agree"
+    );
+    assert_eq!(
+        declared_byte_limit(
+            CONFIG_PROTO,
+            "message PublishSnapshotRequest",
+            "bounded_snapshot"
+        ),
+        MAX_SNAPSHOT_BYTES,
+        "the PublishSnapshotRequest field comment and the Rust limit must agree"
+    );
+}
+
+/// The byte limit stated in the comment directly above a field, in bytes.
+///
+/// Fails the test rather than returning a default when the comment is
+/// missing or no longer states a byte count: a silent drift from the contract
+/// is exactly what these tests exist to catch.
+fn declared_byte_limit(proto: &str, message: &str, field: &str) -> usize {
+    let lines: Vec<&str> = proto.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with(message))
+        .unwrap_or_else(|| {
+            panic!(
+                "{proto_name} has no {message}",
+                proto_name = if proto.contains("corvi.provider.v1") {
+                    "provider.proto"
+                } else {
+                    "config.proto"
+                }
+            )
+        });
+    let block_end = lines[start..]
+        .iter()
+        .position(|line| *line == "}")
+        .expect("the message block is closed");
+    let block = &lines[start..start + block_end];
+    let field_line = block
+        .iter()
+        .position(|line| line.contains(field) && line.contains(" bytes "))
+        .unwrap_or_else(|| panic!("{message} does not declare a bytes field named {field}"));
+
+    // The limit lives in the `//` comment block immediately above the field.
+    let mut comment = String::new();
+    for line in block[..field_line].iter().rev() {
+        match line.trim_start().strip_prefix("//") {
+            Some(text) => comment.insert_str(0, text),
+            None => break,
+        }
+    }
+    let bytes_unit = comment
+        .find(" bytes)")
+        .unwrap_or_else(|| panic!("the comment on {field} does not state a byte limit"));
+    let digits: String = comment[..bytes_unit]
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits
+        .parse::<usize>()
+        .unwrap_or_else(|_| panic!("the comment on {field} states no byte count: {comment:?}"))
 }
 
 #[test]

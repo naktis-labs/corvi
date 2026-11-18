@@ -1816,3 +1816,268 @@ fn an_uncertain_send_is_not_reopened_by_a_late_worker() {
         "an uncertain send was claimed again"
     );
 }
+
+/// H1: a grant that arrives at the public write path already revoked is a
+/// revocation, so it is recorded in the ledger exactly like `revoke_grant`
+/// records one — and a backup that predates it cannot bring the revoked
+/// grant back.
+#[test]
+fn a_revocation_written_through_put_grant_is_recorded_in_the_ledger() {
+    let directory = directory("put-grant-ledger");
+    let path = directory.join("state.sqlite");
+    let backup = directory.join("backup.sqlite");
+    let store = SqliteStore::open(&path).expect("the store opens");
+    let grant = revocable_grant();
+    store.put_grant(&grant).expect("the grant is stored");
+    // The backup predates the revocation.
+    store.backup_to(&backup).expect("the backup is written");
+    // The revocation arrives through the public write path: the record
+    // that is stored is already revoked.
+    let revoked = Grant {
+        revoked_at: Some(200),
+        ..grant
+    };
+    store.put_grant(&revoked).expect("the grant is stored");
+    let ledger = store
+        .revocation_ledger_path()
+        .expect("the ledger is there")
+        .to_path_buf();
+    assert!(
+        RevocationLedger::open(&ledger)
+            .expect("the ledger opens")
+            .entries()
+            .expect("the entries")
+            .iter()
+            .any(|entry| entry.subject == "grant-1"
+                && entry.kind == RevocationKind::Grant.as_str()
+                && entry.at == 200),
+        "a revoked grant written through put_grant left no ledger entry"
+    );
+    assert!(
+        store
+            .revoked_after(150)
+            .expect("the revocations")
+            .iter()
+            .any(|revocation| revocation.subject == "grant-1"),
+        "the freshness check cannot see the revocation"
+    );
+    drop(store);
+
+    // Restoring the older backup would bring the revoked grant back with
+    // `revoked_at = None`. The ledger is what refuses it.
+    let restored = directory.join("restored.sqlite");
+    let error = SqliteStore::restore_from(&backup, &restored, &ledger)
+        .expect_err("a backup that predates a recorded revocation is refused");
+    assert!(
+        matches!(error, StorageError::Conflict(_)),
+        "unexpected error: {error:?}"
+    );
+    assert!(!restored.exists(), "the stale backup was restored");
+}
+
+/// H1: the same holds for a refresh family that arrives revoked.
+#[test]
+fn a_revocation_written_through_put_refresh_family_is_recorded_in_the_ledger() {
+    let directory = directory("put-family-ledger");
+    let path = directory.join("state.sqlite");
+    let store = SqliteStore::open(&path).expect("the store opens");
+    let family = RefreshFamily {
+        family_id: "family-1".to_owned(),
+        grant_id: "grant-1".to_owned(),
+        generation: 1,
+        current_token_hash: "refresh-hash-1".to_owned(),
+        rotated_at: 100,
+        revoked_at: Some(300),
+    };
+    store
+        .put_refresh_family(&family)
+        .expect("the family is stored");
+    let ledger = store
+        .revocation_ledger_path()
+        .expect("the ledger is there")
+        .to_path_buf();
+    assert!(
+        RevocationLedger::open(&ledger)
+            .expect("the ledger opens")
+            .entries()
+            .expect("the entries")
+            .iter()
+            .any(|entry| entry.subject == "family-1"
+                && entry.kind == RevocationKind::RefreshFamily.as_str()
+                && entry.at == 300),
+        "a revoked family written through put_refresh_family left no ledger entry"
+    );
+    assert!(
+        store
+            .revoked_after(150)
+            .expect("the revocations")
+            .iter()
+            .any(|revocation| revocation.subject == "family-1"),
+        "the freshness check cannot see the revocation"
+    );
+}
+
+/// M7: a restore whose ledger agrees with the destination's in length but
+/// not in content must not replace the destination's ledger: the
+/// destination's own revocations would be lost.
+#[test]
+fn a_restore_that_would_lose_a_destination_revocation_is_refused() {
+    let directory = directory("restore-diverged");
+    let source = directory.join("source.sqlite");
+    let backup = directory.join("backup.sqlite");
+    let destination = directory.join("destination.sqlite");
+
+    // The source revoked grant-1; its backup carries that one revocation.
+    {
+        let store = SqliteStore::open(&source).expect("the store opens");
+        store
+            .put_grant(&revocable_grant())
+            .expect("the grant is stored");
+        store
+            .revoke_grant("grant-1", 200)
+            .expect("the grant is revoked");
+        store.backup_to(&backup).expect("the backup is written");
+    }
+    let ledger = directory.join("backup.sqlite.revocations");
+
+    // The destination revoked grant-2: the same length of ledger, a
+    // different revocation.
+    let other = Grant {
+        grant_id: "grant-2".to_owned(),
+        ..revocable_grant()
+    };
+    {
+        let store = SqliteStore::open(&destination).expect("the store opens");
+        store.put_grant(&other).expect("the grant is stored");
+        store
+            .revoke_grant("grant-2", 250)
+            .expect("the grant is revoked");
+    }
+
+    let error = SqliteStore::restore_from(&backup, &destination, &ledger)
+        .expect_err("a restore that would drop the destination's own revocation is refused");
+    assert!(
+        matches!(error, StorageError::Conflict(_)),
+        "unexpected error: {error:?}"
+    );
+    // The destination is untouched: its revocation is still there, and so
+    // is the ledger that holds it.
+    let store = SqliteStore::open(&destination).expect("the store opens");
+    let grant = store
+        .get_grant("grant-2")
+        .expect("the grant is read")
+        .expect("the grant is there");
+    assert_eq!(grant.revoked_at, Some(250));
+    assert!(
+        store
+            .revoked_after(0)
+            .expect("the revocations")
+            .iter()
+            .any(|revocation| revocation.subject == "grant-2"),
+        "the destination's own revocation did not survive the refused restore"
+    );
+}
+
+/// L2: an access token whose grant row is gone does not verify. A grant
+/// that is missing is not a grant that permits, so the lookup fails
+/// closed.
+#[test]
+fn a_token_whose_grant_is_gone_does_not_verify() {
+    let store = SqliteStore::open_in_memory().expect("the store opens");
+    store
+        .put_access_token(&AccessToken {
+            token_hash: "orphan-token".to_owned(),
+            grant_id: "grant-gone".to_owned(),
+            principal: "principal-1".to_owned(),
+            scopes: vec!["mail:messages:read".to_owned()],
+            expires_at: 1_000,
+            revoked_at: None,
+        })
+        .expect("the token is stored");
+    assert!(
+        store
+            .lookup_access_token("orphan-token", 500)
+            .expect("the lookup")
+            .is_none(),
+        "a token without its grant verified"
+    );
+}
+
+/// A6: an upstream identifier that is observed again keeps the opaque
+/// mapping it already has — one public identifier, one row.
+#[test]
+fn an_upstream_identifier_keeps_one_opaque_row() {
+    let directory = directory("opaque-reuse");
+    let store = SqliteStore::open(directory.join("state.sqlite")).expect("the store opens");
+    let mapping = |public_id: &str| OpaqueId {
+        identity: "identity-1".to_owned(),
+        kind: OpaqueKind::Message,
+        public_id: public_id.to_owned(),
+        upstream_id: "m-1".to_owned(),
+    };
+    store
+        .put_opaque_id(&mapping("public-1"))
+        .expect("the mapping is stored");
+    // The sync engine asks for the public identifier before it mints one.
+    assert_eq!(
+        store
+            .lookup_public_id("identity-1", OpaqueKind::Message, "m-1")
+            .expect("the reverse lookup"),
+        Some("public-1".to_owned())
+    );
+    store
+        .put_opaque_id(&mapping("public-1"))
+        .expect("the mapping is stored again");
+    let connection = rusqlite::Connection::open_with_flags(
+        directory.join("state.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("the database opens for reading");
+    let rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM opaque_ids
+             WHERE identity = 'identity-1' AND kind = 'message' AND upstream_id = 'm-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the count is read");
+    assert_eq!(rows, 1, "the same upstream identifier kept two rows");
+}
+
+#[test]
+fn a_slow_refresh_cannot_be_taken_over_after_its_ttl() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    store.put_connection(&connection_at(1)).unwrap();
+    assert!(
+        store
+            .claim_refresh_at("conn-2", 1, "first", 100, 60)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .claim_refresh_at("conn-2", 1, "second", 1000, 60)
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_refresh("conn-2", 1, "first", "secret", 2000, 1001)
+            .unwrap()
+    );
+}
+
+#[test]
+fn same_owner_cannot_claim_an_inflight_refresh_twice() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    store.put_connection(&connection_at(1)).unwrap();
+    assert!(
+        store
+            .claim_refresh_at("conn-2", 1, "worker", 100, 60)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .claim_refresh_at("conn-2", 1, "worker", 101, 60)
+            .unwrap()
+    );
+    assert!(!store.claim_refresh("conn-2", 1, "worker").unwrap());
+}

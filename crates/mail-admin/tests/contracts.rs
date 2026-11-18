@@ -1,5 +1,6 @@
+use mail_admin::publication::Ack;
 use mail_admin::{
-    Ack, AuthenticatedPeer, BoundedPayload, Capabilities, Deadline, MAX_EXECUTE_PAYLOAD_BYTES,
+    AuthenticatedPeer, BoundedPayload, Capabilities, Deadline, MAX_EXECUTE_PAYLOAD_BYTES,
     Operation, PROTOCOL_VERSION, ProtocolSelection, ProviderError, ProviderStatus, ReadProtocol,
     SecretRef, SubmissionProtocol,
 };
@@ -229,16 +230,26 @@ fn every_provider_call_carries_a_deadline() {
 }
 
 #[test]
+fn a_deadline_beyond_the_clock_horizon_saturates_instead_of_panicking() {
+    // A caller that computes a deadline from a malformed or absurd budget
+    // must get the farthest representable deadline, not a panic on the
+    // request path.
+    let deadline = Deadline::after(Duration::MAX);
+    assert!(!deadline.expired());
+    assert!(deadline.remaining().is_some());
+}
+
+#[test]
 fn incompatible_contract_versions_are_rejected() {
     assert_eq!(
-        mail_admin::Snapshot::new(1, PROTOCOL_VERSION + 1, b"document".to_vec()),
+        mail_admin::publication::Snapshot::new(1, PROTOCOL_VERSION + 1, b"document".to_vec()),
         Err(ProviderError::IncompatibleVersion)
     );
 }
 
 #[test]
 fn an_acknowledgement_without_a_publication_is_refused() {
-    let mut store = mail_admin::SnapshotStore::new();
+    let mut store = mail_admin::publication::SnapshotStore::new();
     assert_eq!(
         store.acknowledge(Ack {
             generation: 1,

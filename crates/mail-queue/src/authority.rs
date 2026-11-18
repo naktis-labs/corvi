@@ -37,7 +37,11 @@ pub enum AuthorizationOutcome {
     ///
     /// The generation is the revision of the grant the answer was taken
     /// from, so a caller can tell a fresh authorization from one that has
-    /// been in place since the item was queued.
+    /// been in place since the item was queued. The queue records no
+    /// generation of its own at enqueue time, so this generation is
+    /// reported to the caller and compared against nothing; see
+    /// [`crate::queue::ExecutionOutcome::Accepted`] for the precise
+    /// consequence of that.
     Permitted {
         /// The revision of the grant that permits the action.
         grant_generation: u64,

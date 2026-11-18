@@ -21,6 +21,49 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
 
+#[cfg(test)]
+mod debug_redaction {
+    //! A store that is printed must not print the one-time capabilities it
+    //! keeps.
+
+    use super::*;
+
+    fn transaction(state: &str) -> OnboardingTransaction {
+        OnboardingTransaction {
+            transaction_id: "txn-1".to_owned(),
+            connection_id: "conn-1".to_owned(),
+            provider: "gmail".to_owned(),
+            issuer: "https://provider.example".to_owned(),
+            client_id: "the-client".to_owned(),
+            redirect_uri: "http://127.0.0.1:8400/callback".to_owned(),
+            code_verifier: "the-code-verifier-SECRET".to_owned(),
+            code_challenge: "the-challenge".to_owned(),
+            state: state.to_owned(),
+            nonce: "the-nonce".to_owned(),
+            scopes: Vec::new(),
+            capabilities: Vec::new(),
+            expected_account: "acct-1".to_owned(),
+            identity: "identity-1".to_owned(),
+            principal: "owner-1".to_owned(),
+            principal_roles: Vec::new(),
+            issued_at: 0,
+            expires_at: 600,
+        }
+    }
+
+    #[test]
+    fn the_memory_store_prints_no_state_and_no_verifier() {
+        let store = MemoryTransactionStore::new();
+        store
+            .insert(&transaction("the-one-time-state-SECRET"))
+            .expect("the transaction is stored");
+        let printed = format!("{store:?}");
+        for secret in ["the-one-time-state-SECRET", "the-code-verifier-SECRET"] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::UpstreamOAuthError;
@@ -120,9 +163,26 @@ pub trait TransactionStore: fmt::Debug {
 }
 
 /// A store that keeps the transactions in memory.
-#[derive(Debug, Default)]
+///
+/// A printed store names neither the states nor the transactions it keeps:
+/// the state is the one-time binder of a callback, and the transaction
+/// holds the verifier.
+#[derive(Default)]
 pub struct MemoryTransactionStore {
     transactions: Mutex<BTreeMap<String, OnboardingTransaction>>,
+}
+
+impl fmt::Debug for MemoryTransactionStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pending = self
+            .transactions
+            .lock()
+            .map(|transactions| transactions.len())
+            .unwrap_or_default();
+        f.debug_struct("MemoryTransactionStore")
+            .field("pending", &pending)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryTransactionStore {
@@ -164,12 +224,9 @@ struct StoredTransaction {
 
 /// A store that keeps the transactions in the secret store.
 ///
-/// The transaction holds a code verifier, so it is written encrypted. The
-/// one-time marker lives in the same envelope, which makes the consume
-/// operation a read followed by a write: correct for the single-writer
-/// standalone deployment, and not a claim of cross-process atomicity. A
-/// deployment with several replicas uses the transactional store of
-/// ADR-0010 instead.
+/// The verifier is encrypted, but the underlying secret store has no atomic
+/// consume operation. Taking a transaction therefore fails closed without
+/// modifying it until durable single-use consumption is available.
 pub struct EncryptedTransactionStore {
     secrets: Box<dyn mail_storage::SecretStore>,
 }
@@ -201,22 +258,6 @@ impl EncryptedTransactionStore {
             owner: "onboarding".to_owned(),
         }
     }
-
-    /// The reference of the envelope behind a state.
-    fn reference(
-        &self,
-        state: &str,
-    ) -> Result<Option<mail_storage::SecretRef>, UpstreamOAuthError> {
-        let references = self
-            .secrets
-            .list(TRANSACTION_STORE_OWNER)
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?;
-        Ok(references
-            .into_iter()
-            .find(|reference| reference.name == state))
-    }
 }
 
 impl TransactionStore for EncryptedTransactionStore {
@@ -241,37 +282,40 @@ impl TransactionStore for EncryptedTransactionStore {
         Ok(())
     }
 
-    fn take(&self, state: &str) -> Result<Option<OnboardingTransaction>, UpstreamOAuthError> {
-        let Some(reference) = self.reference(state)? else {
-            return Ok(None);
-        };
-        let Some(plaintext) = self
-            .secrets
-            .get(&reference, &Self::aad(state))
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?
-        else {
-            return Ok(None);
-        };
-        let Ok(document) = serde_json::from_slice::<StoredTransaction>(&plaintext) else {
-            return Ok(None);
-        };
-        if document.consumed {
-            return Ok(None);
-        }
-        let consumed = StoredTransaction {
-            transaction: document.transaction.clone(),
-            consumed: true,
-        };
-        let encoded = serde_json::to_vec(&consumed).map_err(|_| UpstreamOAuthError::Storage {
-            reason: "the transaction cannot be encoded".to_owned(),
-        })?;
-        self.secrets
-            .put(TRANSACTION_STORE_OWNER, state, &encoded, &Self::aad(state))
-            .map_err(|error| UpstreamOAuthError::Storage {
-                reason: error.to_string(),
-            })?;
-        Ok(Some(document.transaction))
+    fn take(&self, _state: &str) -> Result<Option<OnboardingTransaction>, UpstreamOAuthError> {
+        Err(UpstreamOAuthError::Storage {
+            reason: "atomic durable transaction consumption is unavailable".to_owned(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod encrypted_fail_closed_tests {
+    use super::*;
+    use mail_storage::{EncryptedFileSecretStore, SecretStore};
+    #[test]
+    fn encrypted_take_refuses_without_modifying_existing_record() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "corvi-txn-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("secrets");
+        let secrets =
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
+        let aad = EncryptedTransactionStore::aad("state");
+        let reference = secrets
+            .put(TRANSACTION_STORE_OWNER, "state", b"original", &aad)
+            .unwrap();
+        let store = EncryptedTransactionStore::new(Box::new(secrets));
+        assert!(store.take("state").is_err());
+        assert_eq!(
+            store.secrets.get(&reference, &aad).unwrap(),
+            Some(b"original".to_vec())
+        );
     }
 }

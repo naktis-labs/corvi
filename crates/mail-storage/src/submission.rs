@@ -227,6 +227,45 @@ pub trait SubmissionStore {
     fn list_by_identity(&self, identity: &str) -> StorageResult<Vec<Submission>>;
     /// Claim the next submission that is waiting to be sent.
     fn claim_next(&self, owner: &str, now: u64, ttl: u64) -> StorageResult<Option<Submission>>;
+    /// Renew the claim of a submission, under its fencing token.
+    ///
+    /// A worker that is about to perform a claimed item proves it still
+    /// holds the claim by renewing it: a claim whose time-to-live ran out
+    /// while the worker worked can otherwise be taken over, and the stale
+    /// worker would go on acting beside the new owner. The renewal is
+    /// refused (`Ok(false)`) when the fencing token is no longer the
+    /// current one.
+    ///
+    /// The default refuses every renewal: a store that cannot renew a
+    /// claim cannot prove ownership, so the queue must not act on it.
+    fn renew_claim(
+        &self,
+        _id: &str,
+        _fencing_token: u64,
+        _now: u64,
+        _ttl: u64,
+    ) -> StorageResult<bool> {
+        Ok(false)
+    }
+    /// Move a claimed submission to a new state, under its fencing token.
+    ///
+    /// This is the fenced form of [`Self::transition`]: the write is
+    /// refused with [`StorageError::Conflict`] when the claim was taken
+    /// over, so a worker that lost its item cannot mark it as dispatched.
+    /// A worker that only has [`Self::transition`] has no way to make this
+    /// write safe, so the default fails closed.
+    fn transition_claimed(
+        &self,
+        _id: &str,
+        _fencing_token: u64,
+        _state: SubmissionState,
+        _now: u64,
+        _failure_code: Option<String>,
+    ) -> StorageResult<Submission> {
+        Err(StorageError::Unsupported(
+            "this store cannot fence a claimed transition".to_owned(),
+        ))
+    }
     /// Release a claimed submission, recording the outcome.
     fn release_claim(
         &self,

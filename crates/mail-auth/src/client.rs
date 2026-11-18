@@ -12,8 +12,6 @@
 //! `https://client.example/callback/extra`, a different host, or a URI that
 //! only *contains* the registered one as a substring.
 
-use std::collections::BTreeMap;
-
 use mail_core::Action;
 use mail_storage::grants::OAuthClient;
 use url::Url;
@@ -61,14 +59,11 @@ pub struct ClientRegistry<'a> {
     state: &'a dyn GrantState,
     key: &'a [u8],
     administrator_secret_hash: Option<&'a str>,
-    policies: BTreeMap<String, ClientPolicy>,
 }
 
 impl std::fmt::Debug for ClientRegistry<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClientRegistry")
-            .field("clients", &self.policies.keys().collect::<Vec<_>>())
-            .finish_non_exhaustive()
+        f.debug_struct("ClientRegistry").finish_non_exhaustive()
     }
 }
 
@@ -85,7 +80,6 @@ impl<'a> ClientRegistry<'a> {
             state,
             key,
             administrator_secret_hash,
-            policies: BTreeMap::new(),
         }
     }
 
@@ -177,8 +171,9 @@ impl<'a> ClientRegistry<'a> {
             allowed_actions: registration.allowed_actions.clone(),
             allowed_identity_ids: registration.allowed_identity_ids.clone(),
         };
-        self.policies
-            .insert(registration.client_id.clone(), policy.clone());
+        // The policy is stored with the client, so a restarted registry
+        // still knows what the administrator allowed.
+        self.state.put_client_policy(&policy)?;
         Ok(RegisteredClient { record, policy })
     }
 
@@ -214,16 +209,7 @@ impl<'a> ClientRegistry<'a> {
                 "a public client may not present a secret".to_owned(),
             ));
         }
-        let policy = self
-            .policies
-            .get(client_id)
-            .cloned()
-            .unwrap_or_else(|| ClientPolicy {
-                client_id: client_id.to_owned(),
-                grant_types: Vec::new(),
-                allowed_actions: Vec::new(),
-                allowed_identity_ids: Vec::new(),
-            });
+        let policy = self.stored_policy(client_id)?;
         Ok(RegisteredClient { record, policy })
     }
 
@@ -237,22 +223,29 @@ impl<'a> ClientRegistry<'a> {
                 "the client is not known to this issuer".to_owned(),
             ));
         };
-        let policy = self
-            .policies
-            .get(client_id)
-            .cloned()
+        let policy = self.stored_policy(client_id)?;
+        Ok(RegisteredClient { record, policy })
+    }
+
+    /// The policy of a client, when one was provisioned.
+    pub fn policy(&self, client_id: &str) -> Result<Option<ClientPolicy>, AuthError> {
+        self.state.get_client_policy(client_id)
+    }
+
+    /// The policy a client was given, as the store keeps it.
+    ///
+    /// A client without a stored policy is refused every grant type, every
+    /// action and every identity: an unknown policy never widens.
+    fn stored_policy(&self, client_id: &str) -> Result<ClientPolicy, AuthError> {
+        Ok(self
+            .state
+            .get_client_policy(client_id)?
             .unwrap_or_else(|| ClientPolicy {
                 client_id: client_id.to_owned(),
                 grant_types: Vec::new(),
                 allowed_actions: Vec::new(),
                 allowed_identity_ids: Vec::new(),
-            });
-        Ok(RegisteredClient { record, policy })
-    }
-
-    /// The policy of a client, when one was provisioned.
-    pub fn policy(&self, client_id: &str) -> Option<&ClientPolicy> {
-        self.policies.get(client_id)
+            }))
     }
 
     /// Check a redirect URI against the registered ones.
@@ -323,7 +316,10 @@ impl<'a> ClientRegistry<'a> {
 const ADMINISTRATOR: &str = "administrator";
 
 /// A client registration as an administrator hands it in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The registration carries the client secret at provisioning time, so its
+/// `Debug` is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClientRegistration {
     /// The client identifier.
     pub client_id: String,
@@ -341,6 +337,21 @@ pub struct ClientRegistration {
     pub allowed_identity_ids: Vec<String>,
     /// The client secret, at provisioning time only.
     pub secret: Option<String>,
+}
+
+impl std::fmt::Debug for ClientRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientRegistration")
+            .field("client_id", &self.client_id)
+            .field("name", &self.name)
+            .field("client_type", &self.client_type)
+            .field("redirect_uris", &self.redirect_uris)
+            .field("grant_types", &self.grant_types)
+            .field("allowed_actions", &self.allowed_actions)
+            .field("allowed_identity_ids", &self.allowed_identity_ids)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Check a redirect URI a registration or a metadata document wants to add.
@@ -425,6 +436,7 @@ mod tests {
             SqliteStore::open_in_memory().expect("the store opens"),
             Durability::Ephemeral,
         )
+        .expect("an ephemeral claim over an in-memory store holds")
     }
 
     #[test]
@@ -673,6 +685,49 @@ mod tests {
             ClientRegistry::check_grant_type(&client, GrantType::ClientCredentials),
             Err(AuthError::UnsupportedGrantType(_))
         ));
+    }
+
+    #[test]
+    fn the_client_policy_survives_a_restart() {
+        let config = config();
+        let state = memory_state();
+        let admin_hash = admin_hash();
+        let mut provisioning = registry(&config, &state, KEY, Some(&admin_hash));
+        provisioning
+            .provision(
+                registration("client-1", ClientType::Confidential),
+                ADMIN_SECRET,
+            )
+            .expect("the client is provisioned");
+
+        // A restarted registry reads the same store: the policy the
+        // administrator gave the client is not a private note of one
+        // process.
+        let restarted = registry(&config, &state, KEY, Some(&admin_hash));
+        let client = restarted
+            .lookup("client-1")
+            .expect("the client is known after a restart");
+        assert_eq!(
+            ClientRegistry::check_grant_type(&client, GrantType::AuthorizationCode),
+            Ok(())
+        );
+        assert_eq!(
+            ClientRegistry::check_grant_type(&client, GrantType::RefreshToken),
+            Ok(())
+        );
+        assert!(matches!(
+            ClientRegistry::check_grant_type(&client, GrantType::ClientCredentials),
+            Err(AuthError::UnsupportedGrantType(_))
+        ));
+        assert_eq!(ClientRegistry::check_action(&client, Action::Read), Ok(()));
+        assert!(matches!(
+            ClientRegistry::check_action(&client, Action::Send),
+            Err(AuthError::InsufficientScope(_))
+        ));
+        assert_eq!(
+            ClientRegistry::check_identity(&client, "identity-a"),
+            Ok(())
+        );
     }
 
     #[test]

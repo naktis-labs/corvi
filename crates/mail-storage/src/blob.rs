@@ -339,6 +339,17 @@ impl BlobStore for EncryptedDirectoryBlobStore {
                     Err(_) => continue,
                 };
                 if metadata.expires_at <= now {
+                    // An expired object that a submission in flight still
+                    // refers to stays: the pending list is what keeps a
+                    // sweep from taking the payload away from a send that
+                    // has not been acknowledged yet, in the staging area
+                    // and among the committed objects alike.
+                    let still_pending = pending
+                        .iter()
+                        .any(|blob| blob.account == metadata.account && blob.key == metadata.key);
+                    if still_pending {
+                        continue;
+                    }
                     let _ =
                         std::fs::remove_file(self.object_path(&metadata.account, &metadata.key));
                     let _ = std::fs::remove_file(&path);
@@ -445,6 +456,31 @@ mod tests {
         let cleanup = store.cleanup(1_000, &pending).unwrap();
         assert_eq!(cleanup.expired_staged, 0);
         assert!(store.staged_path(&staged.staged_id).exists());
+    }
+
+    #[test]
+    fn a_pending_object_survives_a_cleanup_after_its_ttl() {
+        let store = store("pending-object");
+        let staged = store
+            .stage("acct", "key-1", b"the payload", 100, 60)
+            .unwrap();
+        store.commit(&staged).unwrap();
+        // The object expired long ago, but a submission in flight still
+        // refers to it.
+        let pending = vec![PendingBlob {
+            account: "acct".to_owned(),
+            key: "key-1".to_owned(),
+        }];
+        let cleanup = store.cleanup(1_000, &pending).unwrap();
+        assert_eq!(
+            cleanup.expired_objects, 0,
+            "the object of a pending submission was removed"
+        );
+        assert_eq!(store.get("acct", "key-1").unwrap().unwrap(), b"the payload");
+        // Once nothing refers to it any more, the expired object goes.
+        let cleanup = store.cleanup(1_000, &[]).unwrap();
+        assert_eq!(cleanup.expired_objects, 1);
+        assert_eq!(store.get("acct", "key-1").unwrap(), None);
     }
 
     #[test]

@@ -169,6 +169,18 @@ fn a_deadline_reported_by_the_boundary_is_typed() {
 }
 
 #[test]
+fn a_deadline_failure_is_never_reported_as_a_provider_status() {
+    // A deadline overrun is a boundary condition of this call, not something
+    // the provider reported. Reporting it as an outage invites a caller to
+    // retry a mutating call that may already have taken effect upstream.
+    assert_eq!(CallFailure::DeadlineExceeded.status(), None);
+    assert_ne!(
+        CallFailure::DeadlineExceeded.status(),
+        Some(ProviderStatus::ProviderOutage)
+    );
+}
+
+#[test]
 fn outage_does_not_synthesize_unsupported_usage_or_recipient_provenance() {
     let client = Migadu::new(capabilities());
     let result = client.execute(

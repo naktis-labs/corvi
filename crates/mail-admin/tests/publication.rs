@@ -1,7 +1,5 @@
-use mail_admin::{
-    Ack, MAX_SNAPSHOT_BYTES, PROTOCOL_VERSION, ProviderError, Snapshot, SnapshotStore,
-    publication::digest_of,
-};
+use mail_admin::publication::{Ack, Snapshot, SnapshotStore, digest_of};
+use mail_admin::{MAX_SNAPSHOT_BYTES, PROTOCOL_VERSION, ProviderError};
 
 /// A complete configuration document, in the shape the data plane validates.
 const DOCUMENT: &str = "generation: 1\nlisten: 127.0.0.1:8080\nallow_loopback_plaintext: true\nidentities:\n  - id: alice\n    mailbox: account-a\n    address: alice@example.test\n    isolation: dedicated\n";

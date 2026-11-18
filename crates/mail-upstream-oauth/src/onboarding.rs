@@ -37,6 +37,91 @@ use crate::scope::{Capability, ScopeRequest, resolve_scopes, unexpected_scope};
 use crate::transaction::{MAX_TRANSACTION_TTL_SECONDS, OnboardingTransaction, TransactionStore};
 use crate::transport::{OAuthRequest, OAuthTransport};
 
+#[cfg(test)]
+mod debug_redaction {
+    //! What an operator can see in a printed value stops before the
+    //! credentials and the one-time capabilities.
+
+    use super::*;
+
+    const CODE: &str = "the-provider-code-SECRET";
+    const TICKET: &str = "the-delivery-ticket-SECRET";
+
+    #[test]
+    fn a_callback_request_prints_no_code() {
+        let printed = format!(
+            "{:?}",
+            CallbackRequest {
+                provider: Some("gmail".to_owned()),
+                state: "the-one-time-state".to_owned(),
+                code: Some(CODE.to_owned()),
+                error: None,
+                issuer: None,
+                redirect_uri: None,
+                client_id: None,
+            }
+        );
+        assert!(!printed.contains(CODE), "leaked {CODE}: {printed}");
+        assert!(
+            printed.contains("the-one-time-state"),
+            "the state is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn an_outcome_prints_no_delivery_ticket() {
+        let printed = format!(
+            "{:?}",
+            OnboardingOutcome {
+                provider: "gmail".to_owned(),
+                connection_id: "conn-1".to_owned(),
+                identity: "identity-1".to_owned(),
+                account: "acct-1".to_owned(),
+                granted_scopes: Vec::new(),
+                capabilities: Vec::new(),
+                expires_at: None,
+                delivery_ticket: TICKET.to_owned(),
+                status: ConnectionStatus::Connected,
+            }
+        );
+        assert!(!printed.contains(TICKET), "leaked {TICKET}: {printed}");
+        assert!(
+            printed.contains("conn-1"),
+            "the connection is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn the_escrow_prints_no_ticket_and_no_credential() {
+        let escrow = DeliveryEscrow::new();
+        escrow
+            .issue(EscrowedCredential {
+                provider: "gmail".to_owned(),
+                connection_id: "conn-1".to_owned(),
+                identity: "identity-1".to_owned(),
+                expected_account: "acct-1".to_owned(),
+                capabilities: Vec::new(),
+                tokens: ProviderTokens {
+                    access_token: "the-access-token-SECRET".to_owned(),
+                    refresh_token: Some("the-refresh-token-SECRET".to_owned()),
+                    expires_at: None,
+                    scopes: Vec::new(),
+                },
+                issued_at: 0,
+                expires_at: 600,
+            })
+            .expect("the escrow takes the credential");
+        let printed = format!("{escrow:?}");
+        for secret in [
+            "the-delivery-ticket-",
+            "the-access-token-SECRET",
+            "the-refresh-token-SECRET",
+        ] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+    }
+}
+
 /// The roles a principal may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,10 +367,27 @@ impl fmt::Debug for EscrowedCredential {
 /// The escrow holds the credential in memory and hands it over exactly
 /// once, against an opaque ticket. The ticket carries no credential
 /// material, so it can travel through the management interface without
-/// becoming a secret in its own right.
-#[derive(Debug, Default)]
+/// becoming a secret in its own right. A printed escrow names neither the
+/// tickets it holds — each is a one-time capability — nor any credential.
+#[derive(Default)]
 pub struct DeliveryEscrow {
     entries: Mutex<BTreeMap<String, EscrowedCredential>>,
+    /// The delivery window: held across a delivery's read of the ticket,
+    /// its write of the credential and its claim of the ticket.
+    delivery_window: Mutex<()>,
+}
+
+impl fmt::Debug for DeliveryEscrow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let waiting = self
+            .entries
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or_default();
+        f.debug_struct("DeliveryEscrow")
+            .field("waiting", &waiting)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeliveryEscrow {
@@ -315,6 +417,20 @@ impl DeliveryEscrow {
         ticket: &str,
         now: u64,
     ) -> Result<Option<EscrowedCredential>, UpstreamOAuthError> {
+        let _window = self
+            .delivery_window
+            .lock()
+            .map_err(|_| UpstreamOAuthError::Storage {
+                reason: "the delivery window was poisoned".to_owned(),
+            })?;
+        self.claim_in_window(ticket, now)
+    }
+
+    pub(crate) fn claim_in_window(
+        &self,
+        ticket: &str,
+        now: u64,
+    ) -> Result<Option<EscrowedCredential>, UpstreamOAuthError> {
         let mut entries = self
             .entries
             .lock()
@@ -330,6 +446,47 @@ impl DeliveryEscrow {
         Ok(Some(credential))
     }
 
+    /// The window of one delivery.
+    ///
+    /// A delivery reads a ticket, writes the credential into the secret
+    /// store and only then claims the ticket. Between the read and the
+    /// claim the ticket is still open, so a second delivery of the same
+    /// ticket could slip in — and the secret store keeps one versioned
+    /// envelope per owner and name, so the second write would replace the
+    /// envelope the first delivery is about to name, leaving its
+    /// reference pointing at a version that no longer exists. A delivery
+    /// holds this window from its read to its claim, so the deliveries of
+    /// one ticket are ordered: the loser finds the ticket already spent
+    /// and writes nothing. The escrow is process-local, and a ticket
+    /// exists only in the escrow that issued it, so the window is
+    /// complete whatever wires two deliveries together.
+    pub fn delivery_window(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
+        self.delivery_window.lock()
+    }
+
+    /// Read a credential from the escrow without taking it out.
+    ///
+    /// A delivery reads the credential first and claims it only once the
+    /// credential has become durable elsewhere, so a delivery that fails
+    /// before the claim leaves the ticket valid for a retry. An expired
+    /// credential reads as absent.
+    pub fn peek(
+        &self,
+        ticket: &str,
+        now: u64,
+    ) -> Result<Option<EscrowedCredential>, UpstreamOAuthError> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| UpstreamOAuthError::Storage {
+                reason: "the escrow lock is poisoned".to_owned(),
+            })?;
+        Ok(entries
+            .get(ticket)
+            .filter(|credential| now <= credential.expires_at)
+            .cloned())
+    }
+
     /// How many credentials are waiting.
     pub fn len(&self) -> usize {
         self.entries
@@ -343,24 +500,22 @@ impl DeliveryEscrow {
         self.len() == 0
     }
 
-    /// Accept a credential that arrived in a remote handoff.
+    /// Attempt to accept a credential from a remote handoff.
     ///
-    /// This is the other end of [`crate::handoff`]: a companion CLI that
-    /// completed the grant on its own machine seals the credential into an
-    /// envelope, and the controller opens it here. The envelope is
-    /// authenticated, single use and short lived, and what comes out of it
-    /// is an ordinary delivery ticket — the same kind the hosted flow
-    /// produces. The data plane therefore has exactly one way to receive a
-    /// credential, whichever end it came from.
+    /// Redemption currently fails closed without releasing a payload or
+    /// creating a ticket: the guard interface cannot enforce durable replay
+    /// protection across processes or restarts.
     pub fn accept_handoff(
         &self,
         envelope: &crate::handoff::HandoffEnvelope,
         shared_key: &[u8],
         recipient: &str,
         now: u64,
+        lifetime: &crate::handoff::HandoffLifetime,
         guard: &dyn crate::handoff::OneTimeUseGuard,
     ) -> Result<String, UpstreamOAuthError> {
-        let payload = crate::handoff::redeem_handoff(envelope, shared_key, recipient, now, guard)?;
+        let payload =
+            crate::handoff::redeem_handoff(envelope, shared_key, recipient, now, lifetime, guard)?;
         let credential = EscrowedCredential {
             provider: payload.provider,
             connection_id: payload.connection_id,
@@ -440,7 +595,10 @@ pub struct AuthorizationStart {
 }
 
 /// What the provider sends back to the callback.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// The callback carries the provider's authorization code, so its `Debug`
+/// is manual.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct CallbackRequest {
     /// The provider named in the callback path.
     pub provider: Option<String>,
@@ -458,8 +616,25 @@ pub struct CallbackRequest {
     pub client_id: Option<String>,
 }
 
+impl fmt::Debug for CallbackRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CallbackRequest")
+            .field("provider", &self.provider)
+            .field("state", &self.state)
+            .field("code", &self.code.as_ref().map(|_| "[redacted]"))
+            .field("error", &self.error)
+            .field("issuer", &self.issuer)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("client_id", &self.client_id)
+            .finish()
+    }
+}
+
 /// What a completed onboarding reports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The report names the delivery ticket, which is a one-time capability,
+/// so its `Debug` is manual.
+#[derive(Clone, PartialEq, Eq)]
 pub struct OnboardingOutcome {
     /// The provider.
     pub provider: String,
@@ -479,6 +654,22 @@ pub struct OnboardingOutcome {
     pub delivery_ticket: String,
     /// The status of the connection.
     pub status: ConnectionStatus,
+}
+
+impl fmt::Debug for OnboardingOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OnboardingOutcome")
+            .field("provider", &self.provider)
+            .field("connection_id", &self.connection_id)
+            .field("identity", &self.identity)
+            .field("account", &self.account)
+            .field("granted_scopes", &self.granted_scopes)
+            .field("capabilities", &self.capabilities)
+            .field("expires_at", &self.expires_at)
+            .field("delivery_ticket", &"[redacted]")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 /// The onboarding service.

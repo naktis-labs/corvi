@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use mail_storage::grants::RevocationKind;
 use mail_storage::grants::{AccessToken, AuthCode, Grant, OAuthClient, RefreshFamily, Revocation};
 
+use crate::client::ClientPolicy;
 use crate::error::AuthError;
 use crate::store::{Durability, GrantState};
 
@@ -23,6 +24,7 @@ use crate::store::{Durability, GrantState};
 #[derive(Debug, Default)]
 struct Records {
     clients: HashMap<String, OAuthClient>,
+    client_policies: HashMap<String, ClientPolicy>,
     grants: HashMap<String, Grant>,
     codes: HashMap<String, AuthCode>,
     access_tokens: HashMap<String, AccessToken>,
@@ -85,6 +87,19 @@ impl GrantState for MemoryGrantState {
         Ok(records.clients.get(client_id).cloned())
     }
 
+    fn put_client_policy(&self, policy: &ClientPolicy) -> Result<(), AuthError> {
+        let mut records = self.records.lock().expect("the lock is not poisoned");
+        records
+            .client_policies
+            .insert(policy.client_id.clone(), policy.clone());
+        Ok(())
+    }
+
+    fn get_client_policy(&self, client_id: &str) -> Result<Option<ClientPolicy>, AuthError> {
+        let records = self.records.lock().expect("the lock is not poisoned");
+        Ok(records.client_policies.get(client_id).cloned())
+    }
+
     fn put_grant(&self, grant: &Grant) -> Result<(), AuthError> {
         let mut records = self.records.lock().expect("the lock is not poisoned");
         records.grants.insert(grant.grant_id.clone(), grant.clone());
@@ -136,6 +151,36 @@ impl GrantState for MemoryGrantState {
         let code = records.codes.get_mut(code_hash).ok_or_else(|| {
             AuthError::InvalidGrant("the authorization code is not known".to_owned())
         })?;
+        if code.used_at.is_some() {
+            return Err(AuthError::InvalidGrant(
+                "the authorization code was already exchanged".to_owned(),
+            ));
+        }
+        if code.expires_at <= now {
+            return Err(AuthError::InvalidGrant(
+                "the authorization code has expired".to_owned(),
+            ));
+        }
+        code.used_at = Some(now);
+        Ok(code.clone())
+    }
+
+    fn exchange_bound_auth_code(
+        &self,
+        code_hash: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        now: u64,
+    ) -> Result<AuthCode, AuthError> {
+        let mut records = self.records.lock().expect("the lock is not poisoned");
+        let code = records.codes.get_mut(code_hash).ok_or_else(|| {
+            AuthError::InvalidGrant("the authorization code is not known".to_owned())
+        })?;
+        if code.client_id != client_id || code.redirect_uri != redirect_uri {
+            return Err(AuthError::InvalidGrant(
+                "authorization code binding mismatch".to_owned(),
+            ));
+        }
         if code.used_at.is_some() {
             return Err(AuthError::InvalidGrant(
                 "the authorization code was already exchanged".to_owned(),

@@ -356,7 +356,30 @@ pub fn validate_native_wasm_artifact(
 
     let facts = inspect(&blob.bytes)?;
     validate_module(&blob.bytes)?;
+    validate_module_policy(&facts, allowlist, abi)?;
 
+    let annotations =
+        PolicyAnnotations::parse(&manifest.annotations).map_err(ArtifactError::Annotation)?;
+
+    Ok(ValidatedArtifact {
+        manifest,
+        manifest_digest,
+        module: blob.bytes.clone(),
+        module_sha256: sha256_hex(&blob.bytes),
+        annotations,
+    })
+}
+
+/// Check a module's imports and entry point against the local allowlist and
+/// the expected ABI.
+///
+/// Both artifact paths run the same check: media types and digests alone are
+/// never proof that the packaged module may run (ADR-0004 section 4.4).
+fn validate_module_policy(
+    facts: &crate::oci::wasm::ModuleFacts,
+    allowlist: &CapabilityAllowlist,
+    abi: &AbiExpectation,
+) -> Result<(), ArtifactError> {
     for import in &facts.imports {
         if import.kind != ImportKind::Function {
             return Err(ArtifactError::ForbiddenImport {
@@ -382,16 +405,7 @@ pub fn validate_native_wasm_artifact(
         });
     }
 
-    let annotations =
-        PolicyAnnotations::parse(&manifest.annotations).map_err(ArtifactError::Annotation)?;
-
-    Ok(ValidatedArtifact {
-        manifest,
-        manifest_digest,
-        module: blob.bytes.clone(),
-        module_sha256: sha256_hex(&blob.bytes),
-        annotations,
-    })
+    Ok(())
 }
 
 /// Validate an image-volume policy artifact.
@@ -404,6 +418,8 @@ pub fn validate_volume_artifact(
     recorded_manifest_digest: &str,
     layers: &[LayerBlob],
     expected_module_sha256: Option<&str>,
+    allowlist: &CapabilityAllowlist,
+    abi: &AbiExpectation,
 ) -> Result<ValidatedVolumeArtifact, ArtifactError> {
     let manifest_digest = digest_of(manifest_bytes);
     if manifest_digest != recorded_manifest_digest {
@@ -530,6 +546,14 @@ pub fn validate_volume_artifact(
             });
         }
     }
+
+    // The volume path runs the same module validation as the native path: a
+    // data filesystem that carries the module is still handing the bytes to a
+    // host, so the import allowlist and the ABI entry point are checked here
+    // and not only at the native seam.
+    let facts = inspect(&module_entry.data)?;
+    validate_module(&module_entry.data)?;
+    validate_module_policy(&facts, allowlist, abi)?;
 
     Ok(ValidatedVolumeArtifact {
         manifest,

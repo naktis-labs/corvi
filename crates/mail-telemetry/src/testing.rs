@@ -4,6 +4,7 @@
 //! can be tested without a backend, a network or a vendor SDK.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::event::TelemetryEvent;
 use crate::exporter::{ExporterError, TelemetryExporter};
@@ -106,7 +107,6 @@ impl TelemetryExporter for FailingExporter {
 pub struct PanickingExporter {
     calls: Arc<Mutex<usize>>,
 }
-
 impl PanickingExporter {
     /// A new panicking collector.
     pub fn new() -> Self {
@@ -124,5 +124,27 @@ impl TelemetryExporter for PanickingExporter {
         let mut calls = self.calls.lock().unwrap_or_else(|error| error.into_inner());
         *calls += 1;
         panic!("the telemetry collector panicked");
+    }
+}
+
+/// A collector whose export genuinely blocks, the way a stuck backend client
+/// would: it does not answer early and it does not return an error, it just
+/// keeps the caller waiting for `block_for`.
+#[derive(Debug, Clone)]
+pub struct BlockingExporter {
+    block_for: Duration,
+}
+
+impl BlockingExporter {
+    /// A collector that blocks every export for `block_for`.
+    pub fn blocking_for(block_for: Duration) -> Self {
+        BlockingExporter { block_for }
+    }
+}
+
+impl TelemetryExporter for BlockingExporter {
+    fn export_batch(&mut self, _batch: &[TelemetryEvent]) -> Result<(), ExporterError> {
+        std::thread::sleep(self.block_for);
+        Ok(())
     }
 }

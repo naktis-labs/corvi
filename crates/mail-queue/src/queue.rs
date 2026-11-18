@@ -135,8 +135,17 @@ pub enum ExecutionOutcome {
     ///
     /// The generation is the revision of the grant the item was authorized
     /// under, so a caller can tell which authority the send happened under.
-    /// It is reported, not persisted: the storage schema has no column for
-    /// it.
+    ///
+    /// The generation is **reported, never compared**: the queue records no
+    /// generation when the item was queued, so there is nothing to compare
+    /// this one against, and the storage schema has no column to record it
+    /// in. Re-asking the authority at execution is the check that matters —
+    /// it catches a grant that was revoked and a grant that no longer
+    /// permits the action — but a grant that was *revised* in between, in a
+    /// way that still permits the send, cannot be detected by comparing
+    /// generations, because the enqueue-time generation does not exist
+    /// anywhere to compare with. A caller that needs that comparison has to
+    /// record the generation itself.
     Accepted {
         /// The revision of the grant that authorized the send.
         grant_generation: u64,
@@ -184,8 +193,21 @@ pub trait SubmissionExecutor: fmt::Debug {
 /// What a recovery pass found.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecoveryReport {
-    /// Items that were never dispatched and are safe to claim again.
+    /// Items that were never dispatched and are claimable again.
+    ///
+    /// An item under a claim that has already expired is claimable at
+    /// once, so it is counted here. An item whose claim is still fresh is
+    /// *not*: it becomes claimable only when the claim runs out, and until
+    /// then it is counted in [`Self::held`]. The delay is the claim's
+    /// remaining time-to-live; a recovery pass does not break the claim,
+    /// because the worker that holds it may still be alive.
     pub requeued: usize,
+    /// Items that were never dispatched and are still held by a claim
+    /// that has not expired yet.
+    ///
+    /// They are safe — the claim fences every other worker off — but they
+    /// wait for the claim to expire before another worker may take them.
+    pub held: usize,
     /// Items that were dispatched and are now unknown.
     pub marked_unknown: usize,
     /// Items that were already unknown and were left alone.
@@ -426,12 +448,28 @@ impl<'a> QueueEngine<'a> {
     ///
     /// 1. The fence. A worker whose lease was taken over does not perform
     ///    the work at all.
-    /// 2. The authority. An item whose grant was revoked or narrowed is
+    /// 2. The claim. The worker renews the submission claim it claimed the
+    ///    item under, so a claim that ran out while it worked is not
+    ///    silently stretched over a takeover: a stale claim is refused
+    ///    before anything else happens.
+    /// 3. The authority. An item whose grant was revoked or narrowed is
     ///    refused rather than executed under stale authority.
-    /// 3. The payload. A payload that is missing or that does not match its
+    /// 4. The payload. A payload that is missing or that does not match its
     ///    digest fails the item instead of sending something else.
-    /// 4. The dispatch, and then the outcome: accepted, rejected, unknown
-    ///    or failed.
+    /// 5. The dispatch, and then the outcome: accepted, rejected, unknown
+    ///    or failed. The item is marked as dispatched through the fenced
+    ///    transition, so a worker whose claim was stolen between the checks
+    ///    and the send is refused before it dispatches.
+    ///
+    /// The external dispatch is not fenced by the storage transaction. A
+    /// worker paused after the Submitted transition can still dispatch after
+    /// recovery marks the outcome Unknown. Recovery must never retry Unknown
+    /// work or treat it as proof that no delivery occurred.
+    ///
+    /// The reasons the outcome reports are bounded: the text an upstream
+    /// error carries is untrusted — a rejection often quotes the recipient,
+    /// the subject or the message — so the queue reports the *kind* of
+    /// failure, never its text. See [`classify_transport_failure`].
     pub fn execute(
         &self,
         item: &ClaimedItem,
@@ -441,6 +479,21 @@ impl<'a> QueueEngine<'a> {
         ttl: u64,
     ) -> QueueResult<ExecutionOutcome> {
         item.lease.assert_current(self.mailbox, now, ttl)?;
+        // The claim and the lease are two time-to-lives that this call
+        // keeps together: the lease was just renewed above, so the claim is
+        // renewed under the same fence, and a claim that was taken over in
+        // the meantime is refused here rather than after the work.
+        if !self.submissions.renew_claim(
+            &item.submission.id,
+            item.submission.fencing_token,
+            now,
+            ttl,
+        )? {
+            return Err(QueueError::StaleFence(format!(
+                "the claim of the submission {} was taken over by another worker",
+                item.submission.id
+            )));
+        }
         let request = AuthorizationRequest {
             principal: item.submission.principal.clone(),
             identity: item.submission.identity.clone(),
@@ -470,31 +523,52 @@ impl<'a> QueueEngine<'a> {
         };
         // The item is marked as dispatched before it is dispatched, so a
         // crash in the middle of the send is recovered as unknown rather
-        // than as an item that was never sent.
-        self.submissions
-            .transition(&item.submission.id, SubmissionState::Submitted, now, None)?;
+        // than as an item that was never sent. The mark is fenced: if the
+        // claim was taken over while this worker authorized and loaded, the
+        // write is refused and the worker stops before the dispatch.
+        if let Err(error) = self.submissions.transition_claimed(
+            &item.submission.id,
+            item.submission.fencing_token,
+            SubmissionState::Submitted,
+            now,
+            None,
+        ) {
+            match error {
+                StorageError::Conflict(_) => {
+                    return Err(QueueError::StaleFence(format!(
+                        "the submission {} was taken over by another worker",
+                        item.submission.id
+                    )));
+                }
+                other => return Err(other.into()),
+            }
+        }
         match executor.dispatch(&item.submission, payload.as_deref()) {
             Ok(()) => {
                 self.terminate(item, SubmissionState::Accepted, None, now)?;
                 Ok(ExecutionOutcome::Accepted { grant_generation })
             }
-            Err(TransportError::Rejected(reason)) => {
+            Err(TransportError::Rejected(_)) => {
                 self.terminate(
                     item,
                     SubmissionState::Rejected,
                     Some("upstream_rejected"),
                     now,
                 )?;
-                Ok(ExecutionOutcome::Rejected { reason })
+                Ok(ExecutionOutcome::Rejected {
+                    reason: "upstream_rejected".to_owned(),
+                })
             }
-            Err(TransportError::Ambiguous(reason)) => {
+            Err(TransportError::Ambiguous(_)) => {
                 self.terminate(item, SubmissionState::Unknown, Some("outcome_unknown"), now)?;
-                Ok(ExecutionOutcome::Unknown { reason })
+                Ok(ExecutionOutcome::Unknown {
+                    reason: "outcome_unknown".to_owned(),
+                })
             }
             Err(error) => {
                 self.terminate(item, SubmissionState::Failed, Some("dispatch_failed"), now)?;
                 Ok(ExecutionOutcome::Failed {
-                    reason: error.to_string(),
+                    reason: classify_transport_failure(&error).to_owned(),
                 })
             }
         }
@@ -520,7 +594,21 @@ impl<'a> QueueEngine<'a> {
         for identity in identities {
             for submission in self.submissions.list_by_identity(identity)? {
                 match submission.state {
-                    SubmissionState::Reserved => report.requeued += 1,
+                    SubmissionState::Reserved => {
+                        // A reserved item whose claim has expired (or that
+                        // was never claimed) is claimable right now. A
+                        // reserved item under a fresh claim is not: the
+                        // report counts it as held rather than claiming
+                        // the pass made it claimable.
+                        let claim_expired = submission
+                            .lease_expires_at
+                            .is_none_or(|expires_at| expires_at <= now);
+                        if claim_expired {
+                            report.requeued += 1;
+                        } else {
+                            report.held += 1;
+                        }
+                    }
                     SubmissionState::Submitted => {
                         self.submissions.transition(
                             &submission.id,
@@ -570,8 +658,22 @@ impl<'a> QueueEngine<'a> {
     ///
     /// The task is persisted before the handle is returned, so a client that
     /// is told "this is a task" can always wait for it.
+    ///
+    /// A task identifier belongs to the principal that scheduled it first.
+    /// A second principal asking for the same identifier is refused rather
+    /// than allowed to replace the task that is already there, so one
+    /// principal cannot overwrite another principal's task through the
+    /// store's upsert.
     pub fn schedule_task(&self, request: TaskRequest, now: u64) -> QueueResult<TaskHandle> {
         self.require(Feature::DurableTasks)?;
+        if let Some(existing) = self.tasks.get_task(&request.task_id)? {
+            if existing.principal != request.principal {
+                return Err(QueueError::Invalid(format!(
+                    "the task {} already belongs to another principal",
+                    request.task_id
+                )));
+            }
+        }
         let task = Task {
             task_id: request.task_id.clone(),
             principal: request.principal,
@@ -733,6 +835,28 @@ fn digest_of(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Classify an upstream transport failure into a bounded reason.
+///
+/// The text a transport error carries comes from the upstream: a rejection
+/// routinely quotes the recipient address, and a protocol error may quote
+/// the message. Diagnostics are read by people who do not necessarily have
+/// the right to read the mail, so the queue records the *kind* of failure
+/// under a stable code and never the upstream text itself.
+pub(crate) fn classify_transport_failure(error: &TransportError) -> &'static str {
+    match error {
+        TransportError::Unavailable => "upstream_unavailable",
+        TransportError::Timeout => "upstream_timeout",
+        TransportError::TooLarge { .. } => "upstream_too_large",
+        TransportError::NotFound => "upstream_not_found",
+        TransportError::Unauthorized => "upstream_unauthorized",
+        TransportError::TlsRejected(_) => "upstream_tls_rejected",
+        TransportError::Protocol(_) => "upstream_protocol",
+        TransportError::Ambiguous(_) => "outcome_unknown",
+        TransportError::InvalidState(_) => "upstream_invalid_state",
+        TransportError::Rejected(_) => "upstream_rejected",
+    }
+}
+
 /// A new opaque identifier.
 fn new_id() -> QueueResult<String> {
     Ok(hex::encode(mail_storage::crypto::random_bytes(16)?))
@@ -740,6 +864,10 @@ fn new_id() -> QueueResult<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
     use crate::payload::BlobPayloadStore;
     use mail_storage::{EncryptedDirectoryBlobStore, SqliteStore};
@@ -757,6 +885,60 @@ mod tests {
         }
     }
 
+    /// An executor that records every dispatch it performed.
+    #[derive(Debug, Default, Clone)]
+    struct RecordingExecutor {
+        dispatches: Arc<Mutex<Vec<String>>>,
+        payloads: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
+    }
+
+    impl SubmissionExecutor for RecordingExecutor {
+        fn dispatch(
+            &self,
+            submission: &Submission,
+            payload: Option<&[u8]>,
+        ) -> Result<(), TransportError> {
+            self.dispatches.lock().unwrap().push(submission.id.clone());
+            self.payloads
+                .lock()
+                .unwrap()
+                .push(payload.map(|bytes| bytes.to_vec()));
+            Ok(())
+        }
+    }
+
+    /// An executor that refuses with the text an upstream would send.
+    #[derive(Debug)]
+    struct Rejecting {
+        text: String,
+    }
+
+    impl SubmissionExecutor for Rejecting {
+        fn dispatch(
+            &self,
+            _submission: &Submission,
+            _payload: Option<&[u8]>,
+        ) -> Result<(), TransportError> {
+            Err(TransportError::Rejected(self.text.clone()))
+        }
+    }
+
+    /// An executor that fails before the upstream accepted the message.
+    #[derive(Debug)]
+    struct ProtocolFailure {
+        text: String,
+    }
+
+    impl SubmissionExecutor for ProtocolFailure {
+        fn dispatch(
+            &self,
+            _submission: &Submission,
+            _payload: Option<&[u8]>,
+        ) -> Result<(), TransportError> {
+            Err(TransportError::Protocol(self.text.clone()))
+        }
+    }
+
     #[derive(Debug)]
     struct FixedAuthority {
         outcome: AuthorizationOutcome,
@@ -765,6 +947,44 @@ mod tests {
     impl Authority for FixedAuthority {
         fn authorize(&self, _request: &AuthorizationRequest) -> AuthorizationOutcome {
             self.outcome.clone()
+        }
+    }
+
+    /// An authority that lets a second worker steal the claim while the
+    /// first worker is inside `execute`, and then permits the work.
+    ///
+    /// This is the seam where the reviewer's exploit ran: the first
+    /// worker's fence check had already passed, its claim was allowed to
+    /// expire while it worked, and a second worker claimed the item before
+    /// the first one marked it as dispatched.
+    #[derive(Debug)]
+    struct MidFlightSteal {
+        store: Arc<SqliteStore>,
+        payloads: Arc<BlobPayloadStore<EncryptedDirectoryBlobStore>>,
+        /// The moment the second worker claims at, inside the first
+        /// worker's `execute`.
+        steal_at: u64,
+        /// Whether the steal succeeded.
+        stolen: Arc<AtomicBool>,
+    }
+
+    impl Authority for MidFlightSteal {
+        fn authorize(&self, _request: &AuthorizationRequest) -> AuthorizationOutcome {
+            let engine = QueueEngine::new(
+                QueueFeatures::none().with_durable_queue(true),
+                &*self.store,
+                &*self.store,
+                &*self.store,
+                &*self.payloads,
+            );
+            let stolen = engine
+                .claim_next("worker-two", self.steal_at, 60)
+                .unwrap()
+                .is_some();
+            self.stolen.store(stolen, Ordering::SeqCst);
+            AuthorizationOutcome::Permitted {
+                grant_generation: 1,
+            }
         }
     }
 
@@ -931,6 +1151,99 @@ mod tests {
         assert_eq!(submission.state, SubmissionState::Reserved);
     }
 
+    /// A8: the recovery report does not claim an item was requeued when
+    /// its claim is still fresh and it is not claimable yet.
+    #[test]
+    fn a_fresh_claim_is_reported_as_held_not_requeued() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("recover-held");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client"),
+                100,
+            )
+            .unwrap();
+        // The worker claimed the item at 110 for 60 seconds, and then the
+        // process stopped. At 120 the claim is still fresh: the item is
+        // not claimable, and the report must not say it was requeued.
+        let item = engine.claim_next("worker", 110, 60).unwrap().unwrap();
+        drop(item);
+        let report = engine
+            .recover(&["alice@example.test".to_owned()], 120)
+            .unwrap();
+        assert_eq!(
+            report.requeued, 0,
+            "an item under a fresh claim was not made claimable"
+        );
+        assert_eq!(report.held, 1);
+        // Once the claim expires, the item is claimable again, and the
+        // report says so.
+        let report = engine
+            .recover(&["alice@example.test".to_owned()], 300)
+            .unwrap();
+        assert_eq!(report.requeued, 1);
+        assert_eq!(report.held, 0);
+    }
+
+    #[test]
+    fn recovery_during_dispatch_never_makes_the_submission_claimable() {
+        #[derive(Debug)]
+        struct RecoverDuringDispatch<'a> {
+            engine: &'a QueueEngine<'a>,
+        }
+        impl SubmissionExecutor for RecoverDuringDispatch<'_> {
+            fn dispatch(&self, _: &Submission, _: Option<&[u8]>) -> Result<(), TransportError> {
+                let report = self
+                    .engine
+                    .recover(&["alice@example.test".to_owned()], 300)
+                    .unwrap();
+                assert_eq!(report.marked_unknown, 1);
+                assert!(
+                    self.engine
+                        .claim_next("other-worker", 400, 60)
+                        .unwrap()
+                        .is_none()
+                );
+                Ok(())
+            }
+        }
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("recover-during-dispatch");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        let queued = engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client"),
+                100,
+            )
+            .unwrap();
+        let item = engine.claim_next("worker", 110, 60).unwrap().unwrap();
+        let result = engine.execute(
+            &item,
+            &RecoverDuringDispatch { engine: &engine },
+            &FixedAuthority {
+                outcome: AuthorizationOutcome::Permitted {
+                    grant_generation: 1,
+                },
+            },
+            120,
+            60,
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            store.get_submission(&queued.id).unwrap().unwrap().state,
+            SubmissionState::Unknown
+        );
+    }
+
     #[test]
     fn a_dispatched_item_is_recovered_as_unknown() {
         let store = SqliteStore::open_in_memory().unwrap();
@@ -1027,5 +1340,359 @@ mod tests {
         let task = store.get_task("task-1").unwrap().unwrap();
         assert_eq!(task.state, TaskState::Pending);
         assert_eq!(task.owner, None);
+    }
+
+    /// A1: a claim that is stolen while the first worker is inside
+    /// `execute` must fence that worker off before it dispatches.
+    #[test]
+    fn a_claim_stolen_mid_flight_is_not_dispatched() {
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let payloads = Arc::new(payloads("stolen-mid-flight"));
+        let engine = QueueEngine::new(
+            QueueFeatures::none().with_durable_queue(true),
+            &*store,
+            &*store,
+            &*store,
+            &*payloads,
+        );
+        let queued = engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client")
+                    .with_payload(b"the body".to_vec()),
+                100,
+            )
+            .unwrap();
+        // Worker one claims at 110 for 50 seconds, so its claim expires at
+        // 160. It enters `execute` at 120 and renews its lease.
+        let item = engine.claim_next("worker-one", 110, 50).unwrap().unwrap();
+        let stolen = Arc::new(AtomicBool::new(false));
+        let authority = MidFlightSteal {
+            store: store.clone(),
+            payloads: payloads.clone(),
+            // Long after every expiry: the claim is stolen here, in the
+            // middle of the first worker's `execute`.
+            steal_at: 300,
+            stolen: stolen.clone(),
+        };
+        let executor = RecordingExecutor::default();
+        let error = engine
+            .execute(&item, &executor, &authority, 120, 60)
+            .unwrap_err();
+        assert!(matches!(error, QueueError::StaleFence(_)), "{error:?}");
+        assert!(
+            stolen.load(Ordering::SeqCst),
+            "the second worker must have stolen the claim mid-flight"
+        );
+        assert!(
+            executor.dispatches.lock().unwrap().is_empty(),
+            "a worker whose claim was stolen must not dispatch: {:?}",
+            executor.dispatches.lock().unwrap()
+        );
+        // The item is still deliverable, exactly once, by the worker that
+        // stole it.
+        let second = engine.claim_next("worker-two", 400, 60).unwrap().unwrap();
+        let outcome = engine
+            .execute(
+                &second,
+                &executor,
+                &FixedAuthority {
+                    outcome: AuthorizationOutcome::Permitted {
+                        grant_generation: 2,
+                    },
+                },
+                410,
+                60,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ExecutionOutcome::Accepted {
+                grant_generation: 2
+            }
+        );
+        assert_eq!(executor.dispatches.lock().unwrap().len(), 1);
+        let submission = store.get_submission(&queued.id).unwrap().unwrap();
+        assert_eq!(submission.state, SubmissionState::Accepted);
+    }
+
+    /// A1: a claim the worker renewed may not be stolen at a moment that
+    /// has outlived the claim's original time-to-live only.
+    #[test]
+    fn a_renewed_claim_survives_a_steal_attempt_that_outlives_the_original_ttl() {
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let payloads = Arc::new(payloads("renewed-claim"));
+        let engine = QueueEngine::new(
+            QueueFeatures::none().with_durable_queue(true),
+            &*store,
+            &*store,
+            &*store,
+            &*payloads,
+        );
+        engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client")
+                    .with_payload(b"the body".to_vec()),
+                100,
+            )
+            .unwrap();
+        // The claim expires at 160. `execute` at 120 renews it to 180, and
+        // the steal attempt at 170 has outlived the original claim but not
+        // the renewed one.
+        let item = engine.claim_next("worker-one", 110, 50).unwrap().unwrap();
+        let stolen = Arc::new(AtomicBool::new(false));
+        let authority = MidFlightSteal {
+            store: store.clone(),
+            payloads: payloads.clone(),
+            steal_at: 170,
+            stolen: stolen.clone(),
+        };
+        let executor = RecordingExecutor::default();
+        let outcome = engine
+            .execute(&item, &executor, &authority, 120, 60)
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ExecutionOutcome::Accepted {
+                grant_generation: 1
+            }
+        );
+        assert!(
+            !stolen.load(Ordering::SeqCst),
+            "a worker that renewed its claim must not lose it while it works"
+        );
+        assert_eq!(executor.dispatches.lock().unwrap().len(), 1);
+    }
+
+    /// A2: a sweep that runs after the payload time-to-live must not take
+    /// the payload of an item a worker still holds.
+    #[test]
+    fn a_sweep_after_the_payload_ttl_spares_an_item_in_flight() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("sweep-in-flight");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client")
+                    .with_payload(b"the body".to_vec()),
+                100,
+            )
+            .unwrap();
+        // The worker holds the item with a lease that outlives the payload
+        // time-to-live, so the sweep is the only thing that could take the
+        // payload away.
+        let item = engine
+            .claim_next("worker", 110, PAYLOAD_TTL_SECONDS + 120)
+            .unwrap()
+            .unwrap();
+        let report = engine
+            .sweep(
+                &["alice@example.test".to_owned()],
+                100 + PAYLOAD_TTL_SECONDS + 1,
+            )
+            .unwrap();
+        assert_eq!(
+            report.expired_objects, 0,
+            "the payload of an in-flight item is not an expired object"
+        );
+        let outcome = engine
+            .execute(
+                &item,
+                &Accepting,
+                &FixedAuthority {
+                    outcome: AuthorizationOutcome::Permitted {
+                        grant_generation: 1,
+                    },
+                },
+                100 + PAYLOAD_TTL_SECONDS + 2,
+                60,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ExecutionOutcome::Accepted {
+                grant_generation: 1
+            }
+        );
+    }
+
+    /// A3: a keyed submission without a payload is accepted, sends nothing,
+    /// and replays to the same submission.
+    #[test]
+    fn a_keyed_submission_without_a_payload_round_trips() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("keyed-no-payload");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        let first = engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client")
+                    .with_idempotency_key("key-1"),
+                100,
+            )
+            .unwrap();
+        let replay = engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client")
+                    .with_idempotency_key("key-1"),
+                120,
+            )
+            .unwrap();
+        assert_eq!(replay.id, first.id, "the replay is the same submission");
+        let item = engine.claim_next("worker", 130, 60).unwrap().unwrap();
+        let executor = RecordingExecutor::default();
+        let outcome = engine
+            .execute(
+                &item,
+                &executor,
+                &FixedAuthority {
+                    outcome: AuthorizationOutcome::Permitted {
+                        grant_generation: 1,
+                    },
+                },
+                140,
+                60,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ExecutionOutcome::Accepted {
+                grant_generation: 1
+            }
+        );
+        assert_eq!(
+            *executor.payloads.lock().unwrap(),
+            vec![None],
+            "no payload was attached to the send"
+        );
+    }
+
+    /// A9: the text an upstream rejection carries is untrusted — it often
+    /// quotes the recipient — so the outcome reports a bounded reason.
+    #[test]
+    fn an_upstream_rejection_is_reported_without_the_upstream_text() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("bounded-rejection");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client"),
+                100,
+            )
+            .unwrap();
+        let item = engine.claim_next("worker", 110, 60).unwrap().unwrap();
+        let outcome = engine
+            .execute(
+                &item,
+                &Rejecting {
+                    text: "550 5.1.1 <bob@example.test>: recipient address rejected".to_owned(),
+                },
+                &FixedAuthority {
+                    outcome: AuthorizationOutcome::Permitted {
+                        grant_generation: 1,
+                    },
+                },
+                120,
+                60,
+            )
+            .unwrap();
+        let reason = match outcome {
+            ExecutionOutcome::Rejected { reason } => reason,
+            other => panic!("expected a rejection, got {other:?}"),
+        };
+        assert_eq!(reason, "upstream_rejected");
+        assert!(
+            !reason.contains("bob@example.test"),
+            "the reason carries the upstream text: {reason}"
+        );
+    }
+
+    /// A9: a failure before the upstream accepted is classified the same
+    /// way.
+    #[test]
+    fn a_dispatch_failure_is_reported_without_the_upstream_text() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("bounded-failure");
+        let engine = engine(
+            QueueFeatures::none().with_durable_queue(true),
+            &store,
+            &payloads,
+        );
+        engine
+            .enqueue(
+                QueueRequest::new("alice", "alice@example.test", "client"),
+                100,
+            )
+            .unwrap();
+        let item = engine.claim_next("worker", 110, 60).unwrap().unwrap();
+        let outcome = engine
+            .execute(
+                &item,
+                &ProtocolFailure {
+                    text: "EHLO answered 501 for alice@example.test".to_owned(),
+                },
+                &FixedAuthority {
+                    outcome: AuthorizationOutcome::Permitted {
+                        grant_generation: 1,
+                    },
+                },
+                120,
+                60,
+            )
+            .unwrap();
+        let reason = match outcome {
+            ExecutionOutcome::Failed { reason } => reason,
+            other => panic!("expected a failure, got {other:?}"),
+        };
+        assert_eq!(reason, "upstream_protocol");
+        assert!(
+            !reason.contains("alice@example.test"),
+            "the reason carries the upstream text: {reason}"
+        );
+    }
+
+    /// A10: a task identifier belongs to the principal that scheduled it
+    /// first; another principal cannot take the identifier over.
+    #[test]
+    fn a_task_id_of_another_principal_is_refused() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let payloads = payloads("task-principal");
+        let engine = engine(
+            QueueFeatures::none().with_durable_tasks(true),
+            &store,
+            &payloads,
+        );
+        engine
+            .schedule_task(
+                TaskRequest::new("task-1", "alice", "alice@example.test"),
+                100,
+            )
+            .unwrap();
+        engine.claim_task("task-1", "worker", 110).unwrap();
+        let error = engine
+            .schedule_task(TaskRequest::new("task-1", "bob", "bob@example.test"), 120)
+            .unwrap_err();
+        assert!(matches!(error, QueueError::Invalid(_)), "{error:?}");
+        // The original task is untouched.
+        let task = store.get_task("task-1").unwrap().unwrap();
+        assert_eq!(task.principal, "alice");
+        assert_eq!(task.owner.as_deref(), Some("worker"));
+        // The same principal may re-schedule its own task.
+        engine
+            .schedule_task(
+                TaskRequest::new("task-1", "alice", "alice@example.test"),
+                130,
+            )
+            .unwrap();
     }
 }

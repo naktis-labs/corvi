@@ -341,10 +341,19 @@ fn a_replayed_code_with_another_verifier_is_refused() {
         .token(&token_request(&authorized.code, VERIFIER), NOW)
         .expect("the first exchange succeeds");
     let other_verifier = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    // A wrong verifier is refused before the code's single use is even
+    // consulted; the replay of a used code with the right verifier is
+    // refused as an exchanged code.
     assert!(matches!(
         fixture
             .issuer()
             .token(&token_request(&authorized.code, other_verifier), NOW),
+        Err(AuthError::InvalidPkce(_))
+    ));
+    assert!(matches!(
+        fixture
+            .issuer()
+            .token(&token_request(&authorized.code, VERIFIER), NOW),
         Err(AuthError::InvalidGrant(_))
     ));
 }
@@ -375,6 +384,38 @@ fn a_wrong_code_verifier_is_refused() {
 }
 
 #[test]
+fn a_failed_pkce_verification_does_not_burn_the_code() {
+    let fixture = fixture();
+    let authorized = fixture
+        .issuer()
+        .authorize(
+            &request(),
+            "owner-1",
+            &allowances(),
+            &["identity-a".to_owned()],
+            NOW,
+        )
+        .expect("the authorization succeeds");
+    // A verifier that does not match the challenge is refused ...
+    assert!(matches!(
+        fixture.issuer().token(
+            &token_request(
+                &authorized.code,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            NOW
+        ),
+        Err(AuthError::InvalidPkce(_))
+    ));
+    // ... and the code is still single use for a successful exchange, not
+    // single attempt: the client that holds the right verifier may use it.
+    fixture
+        .issuer()
+        .token(&token_request(&authorized.code, VERIFIER), NOW)
+        .expect("the code survives a failed verification");
+}
+
+#[test]
 fn a_code_is_bound_to_the_redirect_uri_it_was_issued_for() {
     let fixture = fixture();
     let authorized = fixture
@@ -391,8 +432,12 @@ fn a_code_is_bound_to_the_redirect_uri_it_was_issued_for() {
     exchange.redirect_uri = Some("https://client.example/other".to_owned());
     assert!(matches!(
         fixture.issuer().token(&exchange, NOW),
-        Err(AuthError::InvalidRedirectUri(_))
+        Err(AuthError::InvalidGrant(_))
     ));
+    fixture
+        .issuer()
+        .token(&token_request(&authorized.code, VERIFIER), NOW)
+        .expect("a wrong redirect must not consume the code");
 }
 
 #[test]
@@ -583,6 +628,53 @@ fn a_replayed_refresh_token_revokes_the_whole_family() {
         resource.authorize(&access_token, "https://mail.corvi.example", NOW + 30),
         Err(AuthError::InvalidToken(_))
     ));
+}
+
+#[test]
+fn a_refresh_token_of_another_client_leaves_the_family_intact() {
+    let fixture = fixture();
+    // The victim completes a flow and holds a refresh token.
+    let response = complete_flow(&fixture);
+    let refresh_token = response.refresh_token.expect("a refresh token is issued");
+    // Another, unrelated client presents the victim's refresh token. It
+    // authenticates as itself, so the refusal is about the token, not the
+    // client credential.
+    let stolen = TokenRequest {
+        grant_type: "refresh_token".to_owned(),
+        client_id: "confidential-client".to_owned(),
+        client_secret: Some("the client secret".to_owned()),
+        code: None,
+        code_verifier: None,
+        redirect_uri: None,
+        refresh_token: Some(refresh_token.clone()),
+        resource: Some("https://mail.corvi.example".to_owned()),
+    };
+    assert!(matches!(
+        fixture.issuer().token(&stolen, NOW + 10),
+        Err(AuthError::InvalidGrant(_))
+    ));
+    // The victim's family is intact: the same refresh token still works.
+    let mut refresh = TokenRequest {
+        grant_type: "refresh_token".to_owned(),
+        client_id: "public-client".to_owned(),
+        client_secret: None,
+        code: None,
+        code_verifier: None,
+        redirect_uri: None,
+        refresh_token: Some(refresh_token),
+        resource: Some("https://mail.corvi.example".to_owned()),
+    };
+    let refreshed = fixture
+        .issuer()
+        .token(&refresh, NOW + 20)
+        .expect("the victim refreshes after a cross-client request");
+    // And the family moved onto the token the victim received: it is the
+    // current one, not a token a cross-client request left behind.
+    refresh.refresh_token = refreshed.refresh_token;
+    fixture
+        .issuer()
+        .token(&refresh, NOW + 30)
+        .expect("the token the victim received is the current one");
 }
 
 #[test]
@@ -823,7 +915,276 @@ fn a_revoked_access_token_is_refused() {
 }
 
 #[test]
+fn a_foreign_client_cannot_revoke_an_access_token() {
+    let fixture = fixture();
+    let response = complete_flow(&fixture);
+    let resource = ResourceServer::new(&fixture.config, &fixture.state, KEY);
+    // Another, authenticated client asks to revoke the victim's access
+    // token. The answer does not change and it does not say whether the
+    // token exists.
+    fixture
+        .issuer()
+        .revoke(
+            &RevocationRequest {
+                client_id: "confidential-client".to_owned(),
+                client_secret: Some("the client secret".to_owned()),
+                token: response.access_token.clone(),
+            },
+            NOW + 10,
+        )
+        .expect("the revocation is answered without an error");
+    // The victim's token still works.
+    resource
+        .authorize(
+            &response.access_token,
+            "https://mail.corvi.example",
+            NOW + 20,
+        )
+        .expect("the victim's access token survives a foreign revocation");
+}
+
+#[test]
+fn a_foreign_client_cannot_revoke_a_refresh_family() {
+    let fixture = fixture();
+    let response = complete_flow(&fixture);
+    let refresh_token = response.refresh_token.expect("a refresh token is issued");
+    // Another, authenticated client asks to revoke the victim's refresh
+    // token.
+    fixture
+        .issuer()
+        .revoke(
+            &RevocationRequest {
+                client_id: "confidential-client".to_owned(),
+                client_secret: Some("the client secret".to_owned()),
+                token: refresh_token.clone(),
+            },
+            NOW + 10,
+        )
+        .expect("the revocation is answered without an error");
+    // The victim's family still works.
+    fixture
+        .issuer()
+        .token(
+            &TokenRequest {
+                grant_type: "refresh_token".to_owned(),
+                client_id: "public-client".to_owned(),
+                client_secret: None,
+                code: None,
+                code_verifier: None,
+                redirect_uri: None,
+                refresh_token: Some(refresh_token),
+                resource: Some("https://mail.corvi.example".to_owned()),
+            },
+            NOW + 20,
+        )
+        .expect("the victim's refresh family survives a foreign revocation");
+}
+
+#[test]
+fn a_foreign_revocation_of_a_real_and_of_an_unknown_token_answer_the_same() {
+    let fixture = fixture();
+    let response = complete_flow(&fixture);
+    let issuer = fixture.issuer();
+    let real = issuer.revoke(
+        &RevocationRequest {
+            client_id: "confidential-client".to_owned(),
+            client_secret: Some("the client secret".to_owned()),
+            token: response.access_token.clone(),
+        },
+        NOW + 10,
+    );
+    let unknown = issuer.revoke(
+        &RevocationRequest {
+            client_id: "confidential-client".to_owned(),
+            client_secret: Some("the client secret".to_owned()),
+            token: "crt1.not-a-token.the-victim-never-had".to_owned(),
+        },
+        NOW + 10,
+    );
+    // Probing the revocation endpoint with another client's tokens says
+    // nothing about which tokens are real.
+    assert_eq!(real.is_err(), unknown.is_err());
+}
+
+#[test]
 fn the_pkce_method_of_the_configuration_is_s256() {
     let config = config();
     assert_eq!(config.pkce_methods, vec![PkceMethod::S256]);
+}
+
+mod debug_redaction {
+    //! Credential material must never survive a `{:?}` — a request that is
+    //! printed into a log line must not print what it carries.
+
+    use super::*;
+    use mail_auth::issuer::{AuthorizationResponse, TokenResponse};
+
+    const SECRET: &str = "the-client-secret-SECRET";
+    const CODE: &str = "cod1.CODE-PAYLOAD.CODE-RANDOM";
+    const VERIFIER: &str = "the-code-verifier-SECRET";
+    const REFRESH: &str = "crt1.REFRESH-PAYLOAD.REFRESH-RANDOM";
+    const ACCESS: &str = "cat1.ACCESS-PAYLOAD.ACCESS-RANDOM";
+
+    fn token_request() -> TokenRequest {
+        TokenRequest {
+            grant_type: "authorization_code".to_owned(),
+            client_id: "public-client".to_owned(),
+            client_secret: Some(SECRET.to_owned()),
+            code: Some(CODE.to_owned()),
+            code_verifier: Some(VERIFIER.to_owned()),
+            redirect_uri: Some("https://client.example/callback".to_owned()),
+            refresh_token: Some(REFRESH.to_owned()),
+            resource: Some("https://mail.corvi.example".to_owned()),
+        }
+    }
+
+    fn token_response() -> TokenResponse {
+        TokenResponse {
+            access_token: ACCESS.to_owned(),
+            token_type: "Bearer".to_owned(),
+            expires_in: 900,
+            refresh_token: Some(REFRESH.to_owned()),
+            scope: "mail:messages:read".to_owned(),
+            authorization_details: Vec::new(),
+            issuer: "https://auth.corvi.example".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_token_request_prints_no_credential() {
+        let printed = format!("{:?}", token_request());
+        for secret in [SECRET, CODE, VERIFIER, REFRESH] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+        assert!(
+            printed.contains("public-client"),
+            "the client id is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_token_response_prints_no_token() {
+        let printed = format!("{:?}", token_response());
+        for secret in [ACCESS, REFRESH] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+        assert!(
+            printed.contains("mail:messages:read"),
+            "the granted scope is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_revocation_request_prints_no_credential() {
+        let printed = format!(
+            "{:?}",
+            RevocationRequest {
+                client_id: "public-client".to_owned(),
+                client_secret: Some(SECRET.to_owned()),
+                token: REFRESH.to_owned(),
+            }
+        );
+        for secret in [SECRET, REFRESH] {
+            assert!(!printed.contains(secret), "leaked {secret}: {printed}");
+        }
+        assert!(
+            printed.contains("public-client"),
+            "the client id is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn an_authorization_response_prints_no_code() {
+        let printed = format!(
+            "{:?}",
+            AuthorizationResponse {
+                code: CODE.to_owned(),
+                state: Some("the state".to_owned()),
+                redirect_uri: "https://client.example/callback".to_owned(),
+                issuer: "https://auth.corvi.example".to_owned(),
+                expires_at: NOW + 600,
+                grant_ids: vec!["grant-1".to_owned()],
+            }
+        );
+        assert!(!printed.contains(CODE), "leaked {CODE}: {printed}");
+        assert!(
+            printed.contains("the state"),
+            "the state is shown: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_client_registration_prints_no_secret() {
+        let printed = format!(
+            "{:?}",
+            ClientRegistration {
+                client_id: "public-client".to_owned(),
+                name: "the public client".to_owned(),
+                client_type: ClientType::Confidential,
+                redirect_uris: vec!["https://client.example/callback".to_owned()],
+                grant_types: vec![GrantType::AuthorizationCode],
+                allowed_actions: vec![Action::Read],
+                allowed_identity_ids: vec!["identity-a".to_owned()],
+                secret: Some(SECRET.to_owned()),
+            }
+        );
+        assert!(!printed.contains(SECRET), "leaked {SECRET}: {printed}");
+        assert!(
+            printed.contains("public-client"),
+            "the client id is shown: {printed}"
+        );
+    }
+}
+
+#[test]
+fn foreign_client_does_not_consume_authorization_code() {
+    let fixture = fixture();
+    let code = fixture
+        .issuer()
+        .authorize(
+            &request(),
+            "owner-1",
+            &allowances(),
+            &["identity-a".to_owned()],
+            NOW,
+        )
+        .unwrap()
+        .code;
+    let mut foreign = token_request(&code, VERIFIER);
+    foreign.client_id = "confidential-client".to_owned();
+    foreign.client_secret = Some("the client secret".to_owned());
+    assert!(matches!(
+        fixture.issuer().token(&foreign, NOW),
+        Err(AuthError::InvalidGrant(_))
+    ));
+    fixture
+        .issuer()
+        .token(&token_request(&code, VERIFIER), NOW)
+        .unwrap();
+}
+
+#[test]
+fn wrong_resource_does_not_consume_authorization_code() {
+    let fixture = fixture();
+    let code = fixture
+        .issuer()
+        .authorize(
+            &request(),
+            "owner-1",
+            &allowances(),
+            &["identity-a".to_owned()],
+            NOW,
+        )
+        .unwrap()
+        .code;
+    let mut wrong = token_request(&code, VERIFIER);
+    wrong.resource = Some("https://wrong.example".into());
+    assert!(matches!(
+        fixture.issuer().token(&wrong, NOW),
+        Err(AuthError::InvalidResource(_))
+    ));
+    fixture
+        .issuer()
+        .token(&token_request(&code, VERIFIER), NOW)
+        .expect("wrong resource must not burn code");
 }

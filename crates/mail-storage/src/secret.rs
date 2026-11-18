@@ -121,6 +121,7 @@ impl EncryptedFileSecretStore {
             wrapping_key: wrapping_key.to_vec(),
             temporary: AtomicU64::new(0),
         };
+        let guard = store.lock_writer()?;
         if !store.path.exists() {
             store.write(&Document {
                 version: FORMAT_VERSION,
@@ -131,7 +132,21 @@ impl EncryptedFileSecretStore {
         } else {
             check_protected_file(&store.path)?;
         }
+        drop(guard);
         Ok(store)
+    }
+
+    /// Serialize document updates across handles and processes using a stable sidecar inode.
+    fn lock_writer(&self) -> StorageResult<rusqlite::Connection> {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".lock");
+        let path = self.path.with_file_name(name);
+        create_owner_only(&path)?;
+        check_protected_file(&path)?;
+        let connection = rusqlite::Connection::open(path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(30))?;
+        connection.execute_batch("BEGIN EXCLUSIVE")?;
+        Ok(connection)
     }
 
     /// Open a store whose wrapping key lives in a separate file.
@@ -246,6 +261,11 @@ impl EncryptedFileSecretStore {
         new_key_id: &str,
         aad_for: &dyn Fn(&str, &str) -> SecretAad,
     ) -> StorageResult<usize> {
+        // The rewrap reads the whole document and writes the whole
+        // document, so it holds the writers' lock across both halves: a
+        // put that ran in between would be rewrapped here without ever
+        // having been read.
+        let _guard = self.lock_writer()?;
         let mut document = self.read()?;
         let cipher = self.cipher(&document)?;
         let salt_bytes = random_bytes(16)?;
@@ -307,6 +327,10 @@ impl SecretStore for EncryptedFileSecretStore {
         plaintext: &[u8],
         aad: &SecretAad,
     ) -> StorageResult<SecretRef> {
+        // The whole read-modify-write cycle is under the writers' lock, so
+        // two concurrent puts cannot read the same document and write
+        // each other's envelope away.
+        let _guard = self.lock_writer()?;
         let mut document = self.read()?;
         let cipher = self.cipher(&document)?;
         let version = Self::index(&document)
@@ -368,6 +392,9 @@ impl SecretStore for EncryptedFileSecretStore {
     }
 
     fn delete(&self, reference: &SecretRef) -> StorageResult<bool> {
+        // As in `put`: the read-modify-write cycle is serialized, so a
+        // concurrent delete and put cannot take each other's change away.
+        let _guard = self.lock_writer()?;
         let mut document = self.read()?;
         let before = document.secrets.len();
         document.secrets.retain(|envelope| {
@@ -423,7 +450,13 @@ pub fn check_protected_file(path: &Path) -> StorageResult<()> {
 ///
 /// A directory other users may write to lets them replace the protected
 /// file with one of their own, so a store that finds itself in one is
-/// refused instead of trusted.
+/// refused instead of trusted. A directory they may merely *enter* is
+/// refused too: the directory holds the secret file, so its listing, the
+/// file's size and its layout are the store's own business, and a
+/// directory that is not owner-only today is one `chmod` away from
+/// letting someone else swap the file tomorrow. Only a directory that is
+/// owner-only — no permission bit for the group or for anyone else — is
+/// accepted.
 fn protect_directory(directory: &Path) -> StorageResult<()> {
     #[cfg(unix)]
     {
@@ -441,10 +474,10 @@ fn protect_directory(directory: &Path) -> StorageResult<()> {
                 directory.display()
             )));
         }
-        if mode & 0o022 != 0 {
+        if mode & 0o077 != 0 {
             return Err(StorageError::Invalid(format!(
-                "the directory {} may be written by other users; a secret store must not live \
-                 in one",
+                "the directory {} is not owner-only; a secret store must live in a directory \
+                 other users cannot enter or read",
                 directory.display()
             )));
         }
@@ -667,6 +700,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -684,6 +722,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -733,6 +776,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -789,6 +837,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -817,7 +870,7 @@ mod tests {
         entries.sort();
         assert_eq!(
             entries,
-            vec!["secrets.enc".to_owned()],
+            vec!["secrets.enc".to_owned(), "secrets.enc.lock".to_owned()],
             "the failed write left a file behind: {entries:?}"
         );
     }
@@ -832,12 +885,170 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
         }
         let path = directory.join("secrets.enc");
         let error = EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1")
             .expect_err("a directory other users may write to is refused");
         assert!(matches!(error, StorageError::Invalid(_)), "{error:?}");
+    }
+
+    /// L3: a directory other users can enter is refused as well. A
+    /// directory they can read lets them read the secret file's name,
+    /// its size and its layout, and a directory that is not owner-only
+    /// today can be made writable tomorrow; the store accepts only an
+    /// owner-only directory.
+    #[test]
+    fn a_directory_other_users_can_enter_is_refused() {
+        let directory = std::env::temp_dir().join(format!(
+            "corvi-secret-{}",
+            hex::encode(random_bytes(8).unwrap())
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = directory.join("secrets.enc");
+        let error = EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1")
+            .expect_err("a directory other users may enter is refused");
+        assert!(matches!(error, StorageError::Invalid(_)), "{error:?}");
+    }
+
+    /// M9: puts that run at the same time cannot lose each other's
+    /// envelopes. The document is a read-modify-write over the whole
+    /// file, so concurrent writers have to be serialized.
+    #[test]
+    fn secret_lock_child_process() {
+        let Ok(path) = std::env::var("CORVI_SECRET_LOCK_TEST_PATH") else {
+            return;
+        };
+        let store =
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
+        let _lock = store.lock_writer().unwrap();
+        std::fs::write(format!("{path}.ready"), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !std::path::Path::new(&format!("{path}.release")).exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn secret_writer_lock_excludes_another_process() {
+        let directory = std::env::temp_dir().join(format!(
+            "corvi-secret-process-{}",
+            hex::encode(random_bytes(8).unwrap())
+        ));
+        let path = directory.join("secrets.enc");
+        let store =
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "secret::tests::secret_lock_child_process"])
+            .env("CORVI_SECRET_LOCK_TEST_PATH", &path)
+            .spawn()
+            .unwrap();
+        let ready = path.with_file_name("secrets.enc.ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child did not acquire lock"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let lock_path = path.with_file_name("secrets.enc.lock");
+        let conn = rusqlite::Connection::open(lock_path).unwrap();
+        conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(conn.execute_batch("BEGIN EXCLUSIVE").is_err());
+        std::fs::write(path.with_file_name("secrets.enc.release"), b"release").unwrap();
+        assert!(child.wait().unwrap().success());
+        store.put("identity-1", "after", b"token", &aad()).unwrap();
+    }
+
+    #[test]
+    fn separate_handles_serialize_concurrent_puts() {
+        use std::sync::{Arc, Barrier};
+        let directory = std::env::temp_dir().join(format!(
+            "corvi-secret-handles-{}",
+            hex::encode(random_bytes(8).unwrap())
+        ));
+        let path = directory.join("secrets.enc");
+        let first = Arc::new(
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap(),
+        );
+        let second = Arc::new(
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap(),
+        );
+        let barrier = Arc::new(Barrier::new(2));
+        std::thread::scope(|scope| {
+            for (store, prefix) in [(first.clone(), "a"), (second, "b")] {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    for i in 0..16 {
+                        barrier.wait();
+                        store
+                            .put("identity-1", &format!("{prefix}-{i}"), b"token", &aad())
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(first.list("identity-1").unwrap().len(), 32);
+    }
+
+    #[test]
+    fn concurrent_puts_to_distinct_names_all_survive() {
+        use std::sync::Arc;
+        let directory = std::env::temp_dir().join(format!(
+            "corvi-secret-{}",
+            hex::encode(random_bytes(8).unwrap())
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = directory.join("secrets.enc");
+        let store = Arc::new(
+            EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap(),
+        );
+        std::thread::scope(|scope| {
+            for round in 0..8 {
+                let store = &store;
+                scope.spawn(move || {
+                    store
+                        .put("identity-1", &format!("name-{round}"), b"the token", &aad())
+                        .expect("the put succeeds");
+                });
+            }
+        });
+        let mut names: Vec<String> = store
+            .list("identity-1")
+            .unwrap()
+            .into_iter()
+            .map(|reference| reference.name)
+            .collect();
+        names.sort();
+        let expected: Vec<String> = (0..8).map(|round| format!("name-{round}")).collect();
+        assert_eq!(names, expected, "concurrent puts lost envelopes");
     }
 
     #[test]
@@ -847,6 +1058,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -868,6 +1084,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = directory.join("secrets.enc");
         let store =
             EncryptedFileSecretStore::open(&path, b"a wrapping key long enough", "k1").unwrap();
@@ -891,6 +1112,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let key_file = directory.join("wrapping.key");
         std::fs::write(&key_file, b"a wrapping key long enough").unwrap();
         #[cfg(unix)]
@@ -920,6 +1146,11 @@ mod tests {
             hex::encode(random_bytes(8).unwrap())
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let key_file = directory.join("wrapping.key");
         std::fs::write(&key_file, b"a wrapping key long enough").unwrap();
         #[cfg(unix)]

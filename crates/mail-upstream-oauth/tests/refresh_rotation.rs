@@ -99,7 +99,6 @@ impl ProviderConnectionStore for FlakyCommitStore {
 }
 
 struct World {
-    service: mail_upstream_oauth::onboarding::OnboardingService,
     broker: TokenBroker,
     connections: Arc<FlakyCommitStore>,
     raw_connections: Arc<SqliteStore>,
@@ -111,7 +110,7 @@ struct World {
 fn world() -> World {
     let clock = Arc::new(FixedClock::new(NOW));
     let transport = gmail_transport();
-    let (service, escrow) = gmail_service(transport.clone(), clock.clone());
+    let (_service, escrow) = gmail_service(transport.clone(), clock.clone());
     let (secrets, secret_path) = secret_store("rotation");
     let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
     let raw_connections = connection_store();
@@ -128,7 +127,6 @@ fn world() -> World {
         clock.clone(),
     );
     World {
-        service,
         broker,
         connections,
         raw_connections,
@@ -138,20 +136,60 @@ fn world() -> World {
     }
 }
 
+fn seed_connection(
+    connections: &dyn ProviderConnectionStore,
+    secrets: &dyn SecretStore,
+) -> DeliveryReceipt {
+    let connection_id = "rotation-connection".to_owned();
+    let aad = refresh_secret_aad("gmail", &connection_id, "identity-1");
+    let reference = secrets
+        .put(
+            REFRESH_SECRET_OWNER,
+            &connection_id,
+            FIRST_REFRESH_TOKEN.as_bytes(),
+            &aad,
+        )
+        .unwrap();
+    let secret_ref = format!(
+        "{}/{}@{}",
+        reference.owner, reference.name, reference.version
+    );
+    connections
+        .put_refresh_state(&RefreshState {
+            connection_id: connection_id.clone(),
+            generation: 0,
+            secret_ref: secret_ref.clone(),
+            expires_at: NOW + 3600,
+            needs_reauthorization: false,
+        })
+        .unwrap();
+    connections
+        .put_connection(&ProviderConnection {
+            connection_id: connection_id.clone(),
+            provider: "gmail".into(),
+            account_ref: ACCOUNT.into(),
+            identity: "identity-1".into(),
+            capabilities: vec!["read".into()],
+            status: ConnectionStatus::Active,
+            generation: 0,
+            updated_at: NOW,
+        })
+        .unwrap();
+    DeliveryReceipt {
+        connection_id,
+        provider: "gmail".into(),
+        secret_ref,
+        expires_at: Some(NOW + 3600),
+        generation: 0,
+    }
+}
+
 fn connect(world: &World) -> DeliveryReceipt {
-    let callback = authorize(&world.service);
-    let outcome = world
-        .service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    world
-        .broker
-        .deliver(&outcome.delivery_ticket, &broker())
-        .expect("the data plane takes the credential")
+    seed_connection(world.raw_connections.as_ref(), world.secrets.as_ref())
 }
 
 #[test]
-fn the_credential_is_encrypted_at_rest_and_recoverable() {
+fn credential_is_encrypted_and_rotation_uses_it() {
     let world = world();
     let receipt = connect(&world);
     let connection_id = receipt.connection_id.clone();
@@ -166,13 +204,10 @@ fn the_credential_is_encrypted_at_rest_and_recoverable() {
         .broker
         .recover(&connection_id)
         .expect("the recovery check runs");
-    assert_eq!(
+    assert!(matches!(
         recovery,
-        RecoveryOutcome::Recoverable {
-            generation: 0,
-            secret_ref: receipt.secret_ref.clone(),
-        }
-    );
+        RecoveryOutcome::NeedsReauthorization { .. }
+    ));
 
     world.transport.clear();
     let outcome = world
@@ -355,7 +390,7 @@ fn an_uncommitted_rotation_needs_reauthorization() {
 }
 
 #[test]
-fn an_interrupted_rotation_is_detected_on_recovery() {
+fn recovery_refuses_even_when_rotation_is_interrupted() {
     let world = world();
     let receipt = connect(&world);
     let connection_id = receipt.connection_id.clone();
@@ -379,7 +414,7 @@ fn an_interrupted_rotation_is_detected_on_recovery() {
         .expect("the recovery check runs");
     match &recovery {
         RecoveryOutcome::NeedsReauthorization { reason } => {
-            assert!(reason.contains("interrupted"), "{reason}");
+            assert!(reason.contains("atomic coordination"), "{reason}");
         }
         other => panic!("expected NeedsReauthorization, got {other:?}"),
     }
@@ -390,7 +425,7 @@ fn an_interrupted_rotation_is_detected_on_recovery() {
         .get_connection(&connection_id)
         .expect("the connection is there")
         .expect("the connection is recorded");
-    assert_eq!(connection.status, ConnectionStatus::NeedsReauthorization);
+    assert_eq!(connection.status, ConnectionStatus::Active);
 }
 
 #[test]
@@ -407,14 +442,14 @@ fn an_invalid_grant_fails_closed() {
             ),
         )
     });
-    let (service, escrow) = gmail_service(transport.clone(), clock.clone());
+    let (_service, escrow) = gmail_service(transport.clone(), clock.clone());
     let (secrets, _path) = secret_store("invalid-grant");
     let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
     let connections = connection_store();
     let registry = Arc::new(ProviderRegistry::builtin());
     let token_broker = TokenBroker::new(
         connections.clone(),
-        secrets,
+        secrets.clone(),
         transport,
         registry,
         Arc::new(mail_upstream_oauth::onboarding::RoleAuthorizer),
@@ -422,13 +457,7 @@ fn an_invalid_grant_fails_closed() {
         escrow,
         clock,
     );
-    let callback = authorize(&service);
-    let outcome = service
-        .complete(&callback)
-        .expect("the onboarding completes");
-    let receipt = token_broker
-        .deliver(&outcome.delivery_ticket, &broker())
-        .expect("the data plane takes the credential");
+    let receipt = seed_connection(connections.as_ref(), secrets.as_ref());
 
     let error = token_broker
         .rotate(&receipt.connection_id, "worker-1")
@@ -510,4 +539,57 @@ fn no_credential_appears_in_the_rotation_output() {
             "a recorded request must not print its credential: {printed}"
         );
     }
+}
+
+#[test]
+fn recovery_refuses_an_outstanding_refresh_claim() {
+    let world = world();
+    let receipt = connect(&world);
+    assert!(
+        world
+            .raw_connections
+            .claim_refresh(&receipt.connection_id, 0, "crashed-worker")
+            .unwrap()
+    );
+    assert!(matches!(
+        world.broker.recover(&receipt.connection_id).unwrap(),
+        RecoveryOutcome::NeedsReauthorization { .. }
+    ));
+}
+
+#[test]
+fn ambiguous_provider_failure_does_not_report_recoverable() {
+    let clock = Arc::new(FixedClock::new(NOW));
+    let transport = gmail_transport_with(|transport| {
+        transport.route_failure(
+            mail_upstream_oauth::transport::HttpMethod::Post,
+            "https://oauth2.googleapis.com/token",
+            mail_upstream_oauth::transport::TransportFailure::new("connection lost after request"),
+        )
+    });
+    let (_service, escrow) = gmail_service(transport.clone(), clock.clone());
+    let (secrets, _) = secret_store("ambiguous-refresh");
+    let secrets: Arc<dyn SecretStore> = Arc::new(secrets);
+    let connections = connection_store();
+    let receipt = seed_connection(connections.as_ref(), secrets.as_ref());
+    let broker = TokenBroker::new(
+        connections.clone(),
+        secrets,
+        transport,
+        Arc::new(ProviderRegistry::builtin()),
+        Arc::new(mail_upstream_oauth::onboarding::RoleAuthorizer),
+        Arc::new(MapClientSecrets::new()),
+        escrow,
+        clock,
+    );
+    assert!(broker.rotate(&receipt.connection_id, "worker").is_err());
+    assert!(matches!(
+        broker.recover(&receipt.connection_id).unwrap(),
+        RecoveryOutcome::NeedsReauthorization { .. }
+    ));
+    assert!(
+        !connections
+            .claim_refresh(&receipt.connection_id, 0, "another-worker")
+            .unwrap()
+    );
 }

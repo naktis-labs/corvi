@@ -130,7 +130,12 @@ pub trait ClusterApi {
     /// `spec.template` and `spec.selector` would delete them (SSA removes
     /// fields its manager previously owned), invalidating the object. A
     /// JSON merge patch changes the one field that "suspended" means and
-    /// leaves the rest of the workload exactly as it was applied.
+    /// leaves the rest of the workload exactly as it was applied. One
+    /// disclosure: a merge patch carries no field manager, so the API server
+    /// re-attributes `spec.replicas` to the patching actor. A later full
+    /// apply that changes replicas can then conflict and be reported as
+    /// `Degraded/ApplyFailed` — the same no-forced-takeover rule as any
+    /// other drift, resolved by a human decision.
     fn scale_workload(
         &self,
         namespace: &str,
@@ -366,7 +371,8 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                     if scaled {
                         "the gateway is suspended: the operator-owned workload was scaled to zero"
                     } else {
-                        "the gateway is suspended: no operator-owned workload was found"
+                        "the gateway is suspended and no operator-owned workload was found to \
+                         scale down; a foreign object with this name, if any, may still be serving"
                     },
                     generation,
                     now_unix,

@@ -1,9 +1,16 @@
 # Corvi operator API fixtures
 
-These are **design fixtures**, not installable manifests. The Corvi Kubernetes
-operator, its admission webhook and its network policy are **not implemented**:
-there is no Kubernetes client in this crate and no controller is claimed to
-run.
+The Corvi Kubernetes **reconciler exists** (`crates/corvi-operator`): it
+watches `CorviGateway` resources, resolves them through the decision logic in
+`crates/mail-operator`, applies the rendered workload with server-side apply
+and writes the gateway's status. Against a real API server (kwok, v1.36.1) it
+has been shown to create a hardened Deployment, a ClusterIP Service and status
+conditions, and to refuse a Helm-owned workload without touching it.
+
+The operator's **admission webhook and its network policy are still not
+implemented**, and no controller runs anywhere yet: nothing in this
+repository deploys the reconciler, and the cluster evidence is object-level
+only (no nodes exist, so no pod ever ran).
 
 What exists:
 

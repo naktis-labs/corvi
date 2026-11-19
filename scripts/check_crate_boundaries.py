@@ -55,6 +55,7 @@ DATA_PLANE = {
 # that administers software on the host, not a step in serving mail: the
 # data plane may not import it.
 CONTROL_PLANE = {
+    "corvi-operator",
     "mail-operator",
     "mail-admin",
     "mail-bridge",
@@ -112,6 +113,16 @@ ALLOWED = {
     "mail-bridge": {"serde", "serde_json"},
     "mail-credential": {"serde", "serde_yaml"},
     "mail-operator": {"mail-config", "mail-core", "serde", "serde_yaml"},
+    "corvi-operator": {
+        "k8s-openapi",
+        "kube",
+        "mail-operator",
+        "rustls",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "tokio",
+    },
     "mail-policy-engine": {"serde", "serde_json", "sha2", "wasmparser"},
     "mail-queue": {
         "hex",

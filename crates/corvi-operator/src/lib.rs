@@ -22,7 +22,12 @@
 //!   existing operator-owned workload is left untouched and the failure is
 //!   reported on the gateway's status.
 //! * Server-side apply runs without `.force()`: an apply conflict is an
-//!   error, never a silent field steal (ADR-0012 section 3).
+//!   error, never a silent field steal (ADR-0012 section 3). The same rule
+//!   covers the operator's own objects: if a foreign actor edits a field the
+//!   operator applies, the apply conflicts and the drift is reported as
+//!   `Degraded/ApplyFailed` on the gateway's status instead of being forced
+//!   back — repairing it is a deliberate human decision, not an automatic
+//!   takeover.
 //! * A suspended gateway never runs mail — including on refusal paths, where
 //!   the operator-owned workload is scaled to zero before the refusal is
 //!   reported (ADR-0013 section 3).
@@ -64,8 +69,8 @@ impl std::error::Error for ApiFailure {}
 ///
 /// Implemented against `kube` in [`kube`] and against an in-memory fake in
 /// the tests, so the reconciliation rules are testable without a cluster.
-/// Every `namespace` argument must match the adapter's own scope; an adapter
-/// that ignores it must say so by failing, not by silently acting elsewhere.
+/// Adapters are namespaced at construction: every `namespace` argument names
+/// the adapter's own scope, and an adapter must never act outside it.
 pub trait ClusterApi {
     /// Read a `CorviGateway` as its JSON manifest.
     fn get_gateway(
@@ -83,6 +88,10 @@ pub trait ClusterApi {
     ) -> impl std::future::Future<Output = Result<Option<serde_json::Value>, ApiFailure>> + Send;
 
     /// Read the gateway's managed Service.
+    ///
+    /// Adapters are scoped at construction: the kube adapter is namespaced
+    /// when it is built and every call lands inside that namespace, so the
+    /// argument names the same namespace to the fake and to the real client.
     fn get_service(
         &self,
         namespace: &str,
@@ -108,6 +117,21 @@ pub trait ClusterApi {
 
     /// Delete a workload this operator owns.
     fn delete_workload(
+        &self,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<(), ApiFailure>> + Send;
+
+    /// Scale a workload to zero replicas.
+    ///
+    /// This is deliberately *not* server-side apply: the operator's field
+    /// manager owns the whole applied workload, and an apply that omits
+    /// `spec.template` and `spec.selector` would delete them (SSA removes
+    /// fields its manager previously owned), invalidating the object. A
+    /// JSON merge patch changes the one field that "suspended" means and
+    /// leaves the rest of the workload exactly as it was applied.
+    fn scale_workload(
         &self,
         namespace: &str,
         kind: &str,
@@ -151,7 +175,10 @@ pub enum ReconcileOutcome {
         /// The status that was written.
         status: GatewayStatus,
     },
-    /// The reconciler refused to act; nothing was changed.
+    /// The reconciler refused to reconcile the spec. The spec was not
+    /// reconciled, but the pass may still have scaled down a suspended
+    /// gateway's operator-owned workload before refusing, and a Service
+    /// ownership refusal follows a workload apply.
     Refused {
         /// Why it refused.
         reason: Refusal,
@@ -407,7 +434,7 @@ pub async fn reconcile_gateway<A: ClusterApi>(
         .apply_workload(namespace, rendered.kind(), manifest, FIELD_MANAGER)
         .await
     {
-        return degrade_and_fail(api, namespace, name, raw, generation, &error).await;
+        return degrade_and_fail(api, namespace, name, raw, generation, now_unix, &error).await;
     }
 
     // A backend change flips the workload kind; the previous operator-owned
@@ -486,7 +513,8 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                 ReconcileError::Api(ApiFailure("service could not be encoded".into()))
             })?;
             if let Err(error) = api.apply_service(namespace, manifest, FIELD_MANAGER).await {
-                return degrade_and_fail(api, namespace, name, raw, generation, &error).await;
+                return degrade_and_fail(api, namespace, name, raw, generation, now_unix, &error)
+                    .await;
             }
             applied_service = Some(service_name.clone());
         }
@@ -613,13 +641,7 @@ async fn scale_operator_owned_to_zero<A: ClusterApi>(
         if !is_operator_owned(&live, name, gateway_uid) {
             continue;
         }
-        let patch = serde_json::json!({
-            "apiVersion": "apps/v1",
-            "kind": kind,
-            "metadata": { "name": workload_name, "namespace": namespace },
-            "spec": { "replicas": 0 },
-        });
-        api.apply_workload(namespace, kind, patch, FIELD_MANAGER)
+        api.scale_workload(namespace, kind, &workload_name)
             .await
             .map_err(ReconcileError::Api)?;
         scaled = true;
@@ -634,6 +656,7 @@ async fn degrade_and_fail<A: ClusterApi>(
     name: &str,
     raw: serde_json::Value,
     generation: i64,
+    now_unix: i64,
     failure: &ApiFailure,
 ) -> Result<ReconcileOutcome, ReconcileError> {
     let status = GatewayStatus::default()
@@ -644,7 +667,7 @@ async fn degrade_and_fail<A: ClusterApi>(
             "ApplyFailed",
             &format!("a mutation failed and the status may lag: {}", failure.0),
             generation,
-            0,
+            now_unix,
         ));
     let _ = write_status(api, namespace, name, raw, status).await;
     Err(ReconcileError::Api(failure.clone()))
@@ -722,9 +745,11 @@ fn is_operator_owned(
         for reference in references {
             let controller = reference["controller"].as_bool().unwrap_or(false);
             let named = reference["name"].as_str() == Some(gateway_name);
+            // Both sides must carry a UID and they must match; a reference
+            // without one is never proof of ownership (fail closed).
             let same_uid = match (gateway_uid, reference["uid"].as_str()) {
                 (Some(ours), Some(theirs)) => ours == theirs,
-                _ => true,
+                _ => false,
             };
             if controller && named && same_uid && reference["kind"].as_str() == Some("CorviGateway")
             {

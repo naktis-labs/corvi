@@ -146,6 +146,48 @@ async fn the_reconciler_drives_a_real_api_server() {
         .expect("a Resolved condition");
     assert_eq!(resolved["status"], "True");
 
+    // A suspended gateway reconciles to zero replicas on a real server, and
+    // the rest of the applied workload survives; un-suspending converges
+    // back. (A corrupted spec cannot be tested live: the CRD's CEL
+    // invariants refuse it at admission, which is why the raw-spec
+    // scale-down exists only as defense-in-depth for a bypassed CRD.)
+    let mut suspended = fixture("gateway-primary");
+    suspended["metadata"]["uid"] = serde_json::Value::Null;
+    suspended["metadata"]["generation"] = serde_json::Value::Null;
+    suspended["spec"]["suspended"] = serde_json::json!(true);
+    apply(&gateways, &suspended).await;
+    let outcome = reconcile_gateway(&operator, &namespace, "primary", &profile(), now)
+        .await
+        .expect("the reconciliation completes");
+    assert!(
+        matches!(outcome, ReconcileOutcome::Suspended { .. }),
+        "expected a suspended outcome, got {outcome:?}"
+    );
+    let live = workloads
+        .get("corvi-gateway-primary")
+        .await
+        .expect("the workload still exists");
+    assert_eq!(
+        live.data["spec"]["replicas"], 0,
+        "the suspended gateway serves no mail"
+    );
+    assert_eq!(
+        live.data["spec"]["template"]["spec"]["serviceAccountName"], "corvi-gateway",
+        "the reconcile-to-zero did not clobber the workload"
+    );
+
+    // Un-suspending converges back to the desired replicas.
+    let mut restored = fixture("gateway-primary");
+    restored["metadata"]["uid"] = serde_json::Value::Null;
+    restored["metadata"]["generation"] = serde_json::Value::Null;
+    apply(&gateways, &restored).await;
+    let outcome = reconcile_gateway(&operator, &namespace, "primary", &profile(), now)
+        .await
+        .expect("the reconciliation completes");
+    assert!(matches!(outcome, ReconcileOutcome::Applied { .. }));
+    let live = workloads.get("corvi-gateway-primary").await.unwrap();
+    assert_eq!(live.data["spec"]["replicas"], 1);
+
     // A foreign workload is refused, and the refusal is on the status.
     let foreign = serde_json::json!({
         "apiVersion": "apps/v1",

@@ -180,6 +180,25 @@ impl ClusterApi for OperatorClient {
         apply(&self.services, manifest, field_manager).await
     }
 
+    async fn scale_workload(
+        &self,
+        _namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), ApiFailure> {
+        let Some(api) = self.workloads.get(kind) else {
+            return Err(ApiFailure(format!("unsupported workload kind {kind}")));
+        };
+        // A plain JSON merge patch: only the replica count changes, and the
+        // fields the operator's apply manager owns stay owned and intact.
+        // See the trait method's documentation for why this is not apply.
+        let patch = serde_json::json!({ "spec": { "replicas": 0 } });
+        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+            .map_err(|error| bounded_api_failure("scaling the suspended workload", &error))?;
+        Ok(())
+    }
+
     async fn get_service(
         &self,
         _namespace: &str,

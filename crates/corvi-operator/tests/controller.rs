@@ -136,6 +136,24 @@ impl ClusterApi for FakeApi {
         Ok(())
     }
 
+    async fn scale_workload(
+        &self,
+        _namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), corvi_operator::ApiFailure> {
+        // Merge semantics, like the real client: only replicas changes.
+        if let Some(live) = self
+            .workloads
+            .lock()
+            .unwrap()
+            .get_mut(&format!("{kind}/{name}"))
+        {
+            live["spec"]["replicas"] = serde_json::json!(0);
+        }
+        Ok(())
+    }
+
     async fn get_service(
         &self,
         _namespace: &str,
@@ -614,6 +632,14 @@ async fn an_api_failure_surfaces_as_a_reconcile_error() {
         ) -> Result<(), corvi_operator::ApiFailure> {
             unreachable!()
         }
+        async fn scale_workload(
+            &self,
+            _namespace: &str,
+            _kind: &str,
+            _name: &str,
+        ) -> Result<(), corvi_operator::ApiFailure> {
+            unreachable!()
+        }
         async fn patch_status(
             &self,
             _namespace: &str,
@@ -758,6 +784,74 @@ async fn a_suspended_gateway_with_an_invalid_spec_still_scales_down() {
     );
     let live = api.workload("Deployment", "corvi-gateway-primary").unwrap();
     assert_eq!(live["spec"]["replicas"], 0, "no mail-serving replicas");
+}
+
+#[tokio::test]
+async fn an_owner_reference_with_a_foreign_uid_is_not_ownership() {
+    // The controller reference names this gateway, but its UID belongs to a
+    // different object (the gateway was deleted and recreated). Ownership
+    // requires a UID match, and fails closed without one.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let recreated = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "corvi-gateway-primary",
+            "namespace": "corvi-system",
+            "ownerReferences": [{
+                "apiVersion": "corvi.naktis.eu/v1alpha1",
+                "kind": "CorviGateway",
+                "name": name,
+                "uid": "ffffffff-0000-0000-0000-000000000009",
+                "controller": true,
+                "blockOwnerDeletion": true,
+            }],
+        },
+        "spec": { "replicas": 4 },
+    });
+    let api = FakeApi::with_workload_from(api, "Deployment", "corvi-gateway-primary", recreated);
+    let outcome = reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ReconcileOutcome::Refused { .. }));
+    let live = api.workload("Deployment", "corvi-gateway-primary").unwrap();
+    assert_eq!(live["spec"]["replicas"], 4, "nothing was changed");
+}
+
+#[tokio::test]
+async fn scaling_a_suspended_workload_keeps_the_rest_of_it() {
+    // The scale-down is a merge, not an apply: the workload's pod template
+    // and selector survive, only the replica count goes to zero.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let mut broken = fixture("gateway-primary");
+    broken["spec"] = serde_json::json!({ "suspended": true });
+    api.gateways.lock().unwrap().insert(name.clone(), broken);
+
+    let owned = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "corvi-gateway-primary",
+            "namespace": "corvi-system",
+            "labels": { MANAGED_BY_LABEL: MANAGED_BY_VALUE },
+        },
+        "spec": {
+            "replicas": 3,
+            "selector": { "matchLabels": { "app": "corvi-gateway-primary" } },
+            "template": { "spec": { "serviceAccountName": "corvi-gateway" } },
+        },
+    });
+    let api = FakeApi::with_workload_from(api, "Deployment", "corvi-gateway-primary", owned);
+
+    reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    let live = api.workload("Deployment", "corvi-gateway-primary").unwrap();
+    assert_eq!(live["spec"]["replicas"], 0);
+    assert_eq!(
+        live["spec"]["template"]["spec"]["serviceAccountName"], "corvi-gateway",
+        "the merge changed only the replica count"
+    );
 }
 
 #[tokio::test]

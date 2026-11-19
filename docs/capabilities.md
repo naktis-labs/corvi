@@ -84,7 +84,8 @@ Nothing in the third state is emulated. Where a proposal cannot be implemented h
 | CorviGateway reconciled into a hardened workload on a real API server | Implemented as code, cluster-verified | `crates/corvi-operator`; the reconciler applied a Deployment and Service and wrote status against a kwok API server (v1.36.1), and refused a Helm-owned workload. Object-level only: no nodes, so no pod ran |
 | Helm-owned workloads are never adopted | Implemented as code, cluster-verified | `crates/corvi-operator`; an explicit foreign `managed-by` label or an unlabeled object is refused, never modified |
 | Last-known-good configuration retained when the operator or API is unavailable | Implemented as logic | `crates/mail-operator` |
-| A Kubernetes controller, an admission webhook server, real Secret writes, enforced network policy | **Not implemented** | There is no cluster client in the workspace; the decision logic and the rendered fixtures are what exist |
+| The configuration snapshot pipeline (ADR-0012 §3): building the ConfigMap the rendered workload mounts | **Not implemented** | `crates/corvi-operator` reports `Degraded=SnapshotNotPublished` on every applied outcome; until it lands, no pod of an applied workload can start |
+| A watch-driven reconcile loop, an admission webhook server, real Secret writes, enforced network policy | **Not implemented** | The reconciler is a bounded resync poll; the decision logic and the rendered fixtures cover the rest |
 | Credential admission: one protocol shape, scoped or native, non-empty permissions, fail-closed and side-effect-free | Implemented as logic | `crates/mail-credential` (61 tests) |
 | Continuous revalidation when a parent changes or is suspended | Implemented as logic | `crates/mail-credential` |
 | Secret publication with flat protocol keys, approved annotations and atomic replacement | Implemented as logic | `crates/mail-credential` |

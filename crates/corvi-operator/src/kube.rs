@@ -11,6 +11,7 @@ use crate::ClusterApi;
 use kube::Client;
 use kube::api::Api;
 use kube::api::ApiResource;
+use kube::api::DeleteParams;
 use kube::api::DynamicObject;
 use kube::api::GroupVersionKind;
 use kube::api::ListParams;
@@ -179,6 +180,41 @@ impl ClusterApi for OperatorClient {
         apply(&self.services, manifest, field_manager).await
     }
 
+    async fn get_service(
+        &self,
+        _namespace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, ApiFailure> {
+        match self.services.get_opt(name).await {
+            Ok(Some(object)) => to_value(&object),
+            Ok(None) => Ok(None),
+            Err(error) => Err(bounded_api_failure("reading the service", &error)),
+        }
+    }
+
+    async fn delete_workload(
+        &self,
+        _namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), ApiFailure> {
+        let Some(api) = self.workloads.get(kind) else {
+            return Err(ApiFailure(format!("unsupported workload kind {kind}")));
+        };
+        api.delete(name, &DeleteParams::default())
+            .await
+            .map_err(|error| bounded_api_failure("deleting the stale workload", &error))?;
+        Ok(())
+    }
+
+    async fn delete_service(&self, _namespace: &str, name: &str) -> Result<(), ApiFailure> {
+        self.services
+            .delete(name, &DeleteParams::default())
+            .await
+            .map_err(|error| bounded_api_failure("deleting the stale service", &error))?;
+        Ok(())
+    }
+
     async fn patch_status(
         &self,
         _namespace: &str,
@@ -187,7 +223,7 @@ impl ClusterApi for OperatorClient {
     ) -> Result<(), ApiFailure> {
         let params = PatchParams::apply(crate::FIELD_MANAGER);
         self.gateways
-            .patch_status(name, &params, &Patch::Merge(patch))
+            .patch_status(name, &params, &Patch::Apply(&patch))
             .await
             .map_err(|error| bounded_api_failure("writing the gateway status", &error))?;
         Ok(())
@@ -203,7 +239,7 @@ async fn apply(
         .as_str()
         .ok_or_else(|| ApiFailure("the manifest names no object".into()))?
         .to_owned();
-    let params = PatchParams::apply(field_manager).force();
+    let params = PatchParams::apply(field_manager);
     api.patch(&name, &params, &Patch::Apply(&manifest))
         .await
         .map_err(|error| bounded_api_failure("applying the object", &error))?;

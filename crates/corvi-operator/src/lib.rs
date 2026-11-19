@@ -1,5 +1,5 @@
-//! The Corvi Kubernetes operator: it watches `CorviGateway` resources and
-//! reconciles them into the hardened workloads [`mail_operator`] renders.
+//! The Corvi Kubernetes operator: it reconciles `CorviGateway` resources
+//! into the hardened workloads [`mail_operator`] renders.
 //!
 //! # Division of responsibility
 //!
@@ -12,16 +12,29 @@
 //!
 //! # What the reconciler refuses
 //!
-//! * A workload that exists and is owned by someone else (for example a Helm
-//!   release) is never adopted or modified (ADR-0011 section 8.14).
+//! * A workload or Service that exists and is owned by someone else (for
+//!   example a Helm release) is never adopted or modified (ADR-0011 section
+//!   8.14). An explicit `managed-by` label that is not this operator's makes
+//!   an object foreign even when the gateway is its controller owner, and an
+//!   object with no `managed-by` label at all is foreign too: the trust
+//!   anchor is the namespace's RBAC, not a forgeable label.
 //! * A spec that fails `mail-operator`'s validation is never applied; an
 //!   existing operator-owned workload is left untouched and the failure is
 //!   reported on the gateway's status.
-//! * A suspended gateway never runs mail: its workload is scaled to zero.
+//! * Server-side apply runs without `.force()`: an apply conflict is an
+//!   error, never a silent field steal (ADR-0012 section 3).
+//! * A suspended gateway never runs mail — including on refusal paths, where
+//!   the operator-owned workload is scaled to zero before the refusal is
+//!   reported (ADR-0013 section 3).
 //!
-//! The reconciler never creates or mutates ServiceAccounts, never cascades
-//! into upstream mail objects, Secrets, PVCs or CRDs, and never carries more
-//! RBAC than `deploy/operator/policy/corvi-operator.rbac.yaml` grants.
+//! # What this reconciler deliberately does not do yet
+//!
+//! The rendered workload mounts a configuration snapshot from a ConfigMap
+//! (ADR-0012 section 3). Building that snapshot from the resolved ownership
+//! graph is the remaining piece of the phase, so every applied outcome also
+//! carries a `Degraded` condition with reason `SnapshotNotPublished`: the
+//! workload objects exist and are correct, but no pod of theirs can start
+//! until the snapshot pipeline lands. This is reported rather than hidden.
 
 pub mod kube;
 pub mod status;
@@ -33,8 +46,9 @@ use status::{ConditionKind, ConditionStatus, GatewayStatus, condition};
 
 /// A bounded API-server failure.
 ///
-/// The message is produced by this crate, never copied from a provider or a
-/// user-controlled field, and it names no resource content.
+/// The message is produced by this crate and bounded in length; it may quote
+/// Kubernetes API validation text, so it must never be treated as free of
+/// resource content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiFailure(pub String);
 
@@ -48,9 +62,10 @@ impl std::error::Error for ApiFailure {}
 
 /// The API surface a reconciler needs from the cluster.
 ///
-/// Implemented against `kube` in [`self::kube`] and against an in-memory
-/// fake in the tests, so the reconciliation rules are testable without a
-/// cluster.
+/// Implemented against `kube` in [`kube`] and against an in-memory fake in
+/// the tests, so the reconciliation rules are testable without a cluster.
+/// Every `namespace` argument must match the adapter's own scope; an adapter
+/// that ignores it must say so by failing, not by silently acting elsewhere.
 pub trait ClusterApi {
     /// Read a `CorviGateway` as its JSON manifest.
     fn get_gateway(
@@ -64,6 +79,13 @@ pub trait ClusterApi {
         &self,
         namespace: &str,
         kind: &str,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<Option<serde_json::Value>, ApiFailure>> + Send;
+
+    /// Read the gateway's managed Service.
+    fn get_service(
+        &self,
+        namespace: &str,
         name: &str,
     ) -> impl std::future::Future<Output = Result<Option<serde_json::Value>, ApiFailure>> + Send;
 
@@ -84,7 +106,24 @@ pub trait ClusterApi {
         field_manager: &str,
     ) -> impl std::future::Future<Output = Result<(), ApiFailure>> + Send;
 
-    /// Merge-patch the gateway's status subresource.
+    /// Delete a workload this operator owns.
+    fn delete_workload(
+        &self,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<(), ApiFailure>> + Send;
+
+    /// Delete a Service this operator owns.
+    fn delete_service(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<(), ApiFailure>> + Send;
+
+    /// Apply the gateway's status subresource with server-side apply, so
+    /// fields this operator previously owned and no longer reports are
+    /// removed instead of lingering.
     fn patch_status(
         &self,
         namespace: &str,
@@ -131,10 +170,10 @@ pub enum Refusal {
         /// The bounded parse failure.
         detail: String,
     },
-    /// The workload exists and is owned by someone else.
+    /// A workload or Service exists and is owned by someone else.
     OwnershipConflict {
-        /// The workload that is already owned.
-        workload: String,
+        /// The object that is already owned.
+        object: String,
     },
     /// The hardened profile refused to render or validate the workload.
     RenderRefused {
@@ -169,10 +208,14 @@ pub const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
 /// The operator's value for [`MANAGED_BY_LABEL`].
 pub const MANAGED_BY_VALUE: &str = "corvi-operator";
 
+/// The condition reason that names the not-yet-implemented snapshot pipeline.
+pub const SNAPSHOT_PENDING_REASON: &str = "SnapshotNotPublished";
+
 /// Reconcile one gateway to its workload.
 ///
 /// `now_unix` stamps condition transition times; the caller supplies the
-/// clock so the rules are testable without one.
+/// clock so the rules are testable without one. A condition whose content is
+/// unchanged keeps its previous `lastTransitionTime`.
 pub async fn reconcile_gateway<A: ClusterApi>(
     api: &A,
     namespace: &str,
@@ -188,6 +231,11 @@ pub async fn reconcile_gateway<A: ClusterApi>(
         return Ok(ReconcileOutcome::Gone);
     };
 
+    // Suspension is honoured before anything else, straight from the raw
+    // object: even a spec that can no longer be parsed must not keep mail
+    // flowing (ADR-0013 section 3).
+    let raw_suspended = raw["spec"]["suspended"].as_bool().unwrap_or(false);
+
     // The live object goes through the same parser as a submitted manifest, so
     // every refusal in mail-operator's model applies here too.
     let gateway: CorviGateway = match parse_gateway(&raw) {
@@ -195,7 +243,7 @@ pub async fn reconcile_gateway<A: ClusterApi>(
         Err(error) => {
             let detail = bounded(error.to_string());
             let generation = generation_of(&raw);
-            let status = GatewayStatus::default()
+            let mut status = GatewayStatus::default()
                 .with_generation(generation)
                 .with_condition(condition(
                     ConditionKind::Accepted,
@@ -213,16 +261,30 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                     generation,
                     now_unix,
                 ));
-            let patch = serde_json::to_value(&status).map_err(|_| {
-                ReconcileError::Api(ApiFailure("status could not be encoded".into()))
-            })?;
-            api.patch_status(namespace, name, serde_json::json!({ "status": patch }))
+            if raw_suspended {
+                let scaled =
+                    scale_operator_owned_to_zero(api, namespace, name, uid_of(&raw)).await?;
+                status = status.with_condition(condition(
+                    ConditionKind::Degraded,
+                    ConditionStatus::True,
+                    "Suspended",
+                    if scaled {
+                        "the spec is invalid and the gateway is suspended: the operator-owned \
+                         workload was scaled to zero"
+                    } else {
+                        "the spec is invalid and the gateway is suspended: no operator-owned \
+                         workload was found to scale down"
+                    },
+                    generation,
+                    now_unix,
+                ));
+            }
+            return write_status(api, namespace, name, raw, status.clone())
                 .await
-                .map_err(ReconcileError::Api)?;
-            return Ok(ReconcileOutcome::Refused {
-                reason: Refusal::InvalidSpec { detail },
-                status,
-            });
+                .map(|_| ReconcileOutcome::Refused {
+                    reason: Refusal::InvalidSpec { detail },
+                    status,
+                });
         }
     };
 
@@ -248,7 +310,7 @@ pub async fn reconcile_gateway<A: ClusterApi>(
     let rendered = match rendered {
         Ok(workload) => workload,
         Err(detail) => {
-            let status = GatewayStatus::default()
+            let mut status = GatewayStatus::default()
                 .with_generation(generation)
                 .with_desired_replicas(i64::from(gateway.spec.replicas))
                 .with_condition(condition(
@@ -267,28 +329,46 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                     generation,
                     now_unix,
                 ));
-            return write_refusal(
-                api,
-                namespace,
-                name,
-                Refusal::RenderRefused { detail },
-                status,
-            )
-            .await;
+            if suspended {
+                let scaled =
+                    scale_operator_owned_to_zero(api, namespace, name, uid_of(&raw)).await?;
+                status = status.with_condition(condition(
+                    ConditionKind::Degraded,
+                    ConditionStatus::True,
+                    "Suspended",
+                    if scaled {
+                        "the gateway is suspended: the operator-owned workload was scaled to zero"
+                    } else {
+                        "the gateway is suspended: no operator-owned workload was found"
+                    },
+                    generation,
+                    now_unix,
+                ));
+            }
+            return write_status(api, namespace, name, raw, status.clone())
+                .await
+                .map(|_| ReconcileOutcome::Refused {
+                    reason: Refusal::RenderRefused { detail },
+                    status,
+                });
         }
     };
 
     let workload_kind = rendered.kind().to_owned();
     let workload_name = rendered.name().to_owned();
 
-    // The adoption guard: a workload that exists and is owned by someone else
+    // The adoption guard: an object that exists and is owned by someone else
     // is never modified (ADR-0011 section 8.14).
     let existing = api
         .get_workload(namespace, rendered.kind(), rendered.name())
         .await
         .map_err(ReconcileError::Api)?;
     if let Some(live) = &existing {
-        if ownership_of(live) == WorkloadOwner::Other {
+        if !is_operator_owned(
+            live,
+            &gateway.metadata.name,
+            gateway.metadata.uid.as_deref(),
+        ) {
             let status = GatewayStatus::default()
                 .with_generation(generation)
                 .with_condition(condition(
@@ -296,7 +376,8 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                     ConditionStatus::True,
                     "OwnershipConflict",
                     &format!(
-                        "{workload_kind}/{workload_name} exists and is not owned by the operator"
+                        "{workload_kind}/{workload_name} exists and is not owned by the operator; \
+                         a foreign object may still be serving"
                     ),
                     generation,
                     now_unix,
@@ -309,35 +390,126 @@ pub async fn reconcile_gateway<A: ClusterApi>(
                     generation,
                     now_unix,
                 ));
-            return write_refusal(
-                api,
-                namespace,
-                name,
-                Refusal::OwnershipConflict {
-                    workload: format!("{workload_kind}/{workload_name}"),
-                },
-                status,
-            )
-            .await;
+            return write_status(api, namespace, name, raw, status.clone())
+                .await
+                .map(|_| ReconcileOutcome::Refused {
+                    reason: Refusal::OwnershipConflict {
+                        object: format!("{workload_kind}/{workload_name}"),
+                    },
+                    status,
+                });
         }
     }
 
     let manifest = workload_manifest(&rendered)
         .map_err(|_| ReconcileError::Api(ApiFailure("workload could not be encoded".into())))?;
-    api.apply_workload(namespace, rendered.kind(), manifest, FIELD_MANAGER)
+    if let Err(error) = api
+        .apply_workload(namespace, rendered.kind(), manifest, FIELD_MANAGER)
+        .await
+    {
+        return degrade_and_fail(api, namespace, name, raw, generation, &error).await;
+    }
+
+    // A backend change flips the workload kind; the previous operator-owned
+    // workload of the other kind would keep its pod-template labels and keep
+    // receiving the Service's traffic, so it is deleted once the new kind is
+    // in place.
+    let other_kind = if workload_kind == "Deployment" {
+        "StatefulSet"
+    } else {
+        "Deployment"
+    };
+    let stale = api
+        .get_workload(namespace, other_kind, &workload_name)
         .await
         .map_err(ReconcileError::Api)?;
+    if let Some(stale) = stale {
+        if is_operator_owned(
+            &stale,
+            &gateway.metadata.name,
+            gateway.metadata.uid.as_deref(),
+        ) {
+            api.delete_workload(namespace, other_kind, &workload_name)
+                .await
+                .map_err(ReconcileError::Api)?;
+        }
+    }
 
     let service_name = format!("corvi-gateway-{name}");
     let service = service_manifest(&rendered, &gateway, profile, &service_name);
     let mut applied_service = None;
-    if let Some(service) = service {
-        let manifest = serde_json::to_value(&service)
-            .map_err(|_| ReconcileError::Api(ApiFailure("service could not be encoded".into())))?;
-        api.apply_service(namespace, manifest, FIELD_MANAGER)
-            .await
-            .map_err(ReconcileError::Api)?;
-        applied_service = Some(service_name.clone());
+    match service {
+        Some(service) => {
+            // The Service is guarded like the workload: a foreign object with
+            // this deterministic name is never adopted.
+            let existing_service = api
+                .get_service(namespace, &service_name)
+                .await
+                .map_err(ReconcileError::Api)?;
+            if let Some(live) = &existing_service {
+                if !is_operator_owned(
+                    live,
+                    &gateway.metadata.name,
+                    gateway.metadata.uid.as_deref(),
+                ) {
+                    let status = GatewayStatus::default()
+                        .with_generation(generation)
+                        .with_condition(condition(
+                            ConditionKind::Degraded,
+                            ConditionStatus::True,
+                            "OwnershipConflict",
+                            &format!(
+                                "Service/{service_name} exists and is not owned by the operator"
+                            ),
+                            generation,
+                            now_unix,
+                        ))
+                        .with_condition(condition(
+                            ConditionKind::Resolved,
+                            ConditionStatus::False,
+                            "OwnershipConflict",
+                            "a Helm-owned Service is never adopted (ADR-0011 section 8.14)",
+                            generation,
+                            now_unix,
+                        ));
+                    return write_status(api, namespace, name, raw, status.clone())
+                        .await
+                        .map(|_| ReconcileOutcome::Refused {
+                            reason: Refusal::OwnershipConflict {
+                                object: format!("Service/{service_name}"),
+                            },
+                            status,
+                        });
+                }
+            }
+            let manifest = serde_json::to_value(&service).map_err(|_| {
+                ReconcileError::Api(ApiFailure("service could not be encoded".into()))
+            })?;
+            if let Err(error) = api.apply_service(namespace, manifest, FIELD_MANAGER).await {
+                return degrade_and_fail(api, namespace, name, raw, generation, &error).await;
+            }
+            applied_service = Some(service_name.clone());
+        }
+        None => {
+            // No listener is published: an operator-owned Service from an
+            // earlier generation would keep routing disabled ports, so it is
+            // removed.
+            let existing_service = api
+                .get_service(namespace, &service_name)
+                .await
+                .map_err(ReconcileError::Api)?;
+            if let Some(live) = existing_service {
+                if is_operator_owned(
+                    &live,
+                    &gateway.metadata.name,
+                    gateway.metadata.uid.as_deref(),
+                ) {
+                    api.delete_service(namespace, &service_name)
+                        .await
+                        .map_err(ReconcileError::Api)?;
+                }
+            }
+        }
     }
 
     let observed = observed_replicas(existing.as_ref());
@@ -358,7 +530,7 @@ pub async fn reconcile_gateway<A: ClusterApi>(
         status = status.with_service(service.clone());
     }
 
-    let outcome = if suspended {
+    if suspended {
         status = status.with_condition(condition(
             ConditionKind::Resolved,
             ConditionStatus::True,
@@ -367,9 +539,6 @@ pub async fn reconcile_gateway<A: ClusterApi>(
             generation,
             now_unix,
         ));
-        ReconcileOutcome::Suspended {
-            status: status.clone(),
-        }
     } else {
         let (ready_status, ready_reason) = readiness(&observed, i64::from(desired));
         status = status.with_condition(condition(
@@ -388,6 +557,27 @@ pub async fn reconcile_gateway<A: ClusterApi>(
             generation,
             now_unix,
         ));
+    }
+
+    // The snapshot pipeline (ADR-0012 section 3) is the remaining piece of
+    // the phase: until it exists, the applied workload's pods cannot start,
+    // and the status says so instead of implying readiness is reachable.
+    status = status.with_condition(condition(
+        ConditionKind::Degraded,
+        ConditionStatus::True,
+        SNAPSHOT_PENDING_REASON,
+        "the configuration snapshot (ADR-0012 section 3) is not published yet; \
+         the workload mounts a ConfigMap nothing creates, so no pod can start",
+        generation,
+        now_unix,
+    ));
+
+    let status = carry_transition_times(&raw, status);
+    let outcome = if suspended {
+        ReconcileOutcome::Suspended {
+            status: status.clone(),
+        }
+    } else {
         ReconcileOutcome::Applied {
             workload_kind,
             workload_name,
@@ -395,102 +585,154 @@ pub async fn reconcile_gateway<A: ClusterApi>(
             status: status.clone(),
         }
     };
-
-    let patch = serde_json::to_value(&status)
-        .map_err(|_| ReconcileError::Api(ApiFailure("status could not be encoded".into())))?;
-    api.patch_status(namespace, name, serde_json::json!({ "status": patch }))
-        .await
-        .map_err(ReconcileError::Api)?;
+    write_status(api, namespace, name, raw, status).await?;
     Ok(outcome)
 }
 
-async fn write_refusal<A: ClusterApi>(
+/// Scale any operator-owned workload of either kind to zero.
+///
+/// Used on refusal paths for a suspended gateway, where the spec may be too
+/// broken to name its own workload kind. Returns whether anything was
+/// scaled.
+async fn scale_operator_owned_to_zero<A: ClusterApi>(
     api: &A,
     namespace: &str,
     name: &str,
-    reason: Refusal,
-    status: GatewayStatus,
+    gateway_uid: Option<&str>,
+) -> Result<bool, ReconcileError> {
+    let workload_name = format!("corvi-gateway-{name}");
+    let mut scaled = false;
+    for kind in ["Deployment", "StatefulSet"] {
+        let existing = api
+            .get_workload(namespace, kind, &workload_name)
+            .await
+            .map_err(ReconcileError::Api)?;
+        let Some(live) = existing else {
+            continue;
+        };
+        if !is_operator_owned(&live, name, gateway_uid) {
+            continue;
+        }
+        let patch = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": kind,
+            "metadata": { "name": workload_name, "namespace": namespace },
+            "spec": { "replicas": 0 },
+        });
+        api.apply_workload(namespace, kind, patch, FIELD_MANAGER)
+            .await
+            .map_err(ReconcileError::Api)?;
+        scaled = true;
+    }
+    Ok(scaled)
+}
+
+/// Best-effort degraded status before surfacing an API failure.
+async fn degrade_and_fail<A: ClusterApi>(
+    api: &A,
+    namespace: &str,
+    name: &str,
+    raw: serde_json::Value,
+    generation: i64,
+    failure: &ApiFailure,
 ) -> Result<ReconcileOutcome, ReconcileError> {
-    let patch = serde_json::to_value(&status)
-        .map_err(|_| ReconcileError::Api(ApiFailure("status could not be encoded".into())))?;
-    api.patch_status(namespace, name, serde_json::json!({ "status": patch }))
+    let status = GatewayStatus::default()
+        .with_generation(generation)
+        .with_condition(condition(
+            ConditionKind::Degraded,
+            ConditionStatus::True,
+            "ApplyFailed",
+            &format!("a mutation failed and the status may lag: {}", failure.0),
+            generation,
+            0,
+        ));
+    let _ = write_status(api, namespace, name, raw, status).await;
+    Err(ReconcileError::Api(failure.clone()))
+}
+
+/// Write the status, stamping unchanged conditions with their previous
+/// transition times so an unchanged reconciliation does not churn the
+/// resource.
+async fn write_status<A: ClusterApi>(
+    api: &A,
+    namespace: &str,
+    name: &str,
+    raw: serde_json::Value,
+    mut status: GatewayStatus,
+) -> Result<(), ReconcileError> {
+    status = carry_transition_times(&raw, status);
+    let patch = serde_json::json!({
+        "apiVersion": mail_operator::model::API_GROUP_VERSION,
+        "kind": mail_operator::model::ResourceKind::CorviGateway.as_str(),
+        "metadata": { "name": name },
+        "status": serde_json::to_value(&status)
+            .map_err(|_| ReconcileError::Api(ApiFailure("status could not be encoded".into())))?,
+    });
+    api.patch_status(namespace, name, patch)
         .await
-        .map_err(ReconcileError::Api)?;
-    Ok(ReconcileOutcome::Refused { reason, status })
+        .map_err(ReconcileError::Api)
 }
 
-/// Whose workload the live object is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkloadOwner {
-    /// This operator manages it.
-    Operator,
-    /// Someone else does; never touched.
-    Other,
+/// Keep the previous `lastTransitionTime` for every condition whose content
+/// is unchanged; a condition that did not change did not transition.
+fn carry_transition_times(raw: &serde_json::Value, mut status: GatewayStatus) -> GatewayStatus {
+    let Some(previous) = raw["status"]["conditions"].as_array() else {
+        return status;
+    };
+    for condition in &mut status.conditions {
+        if let Some(old) = previous
+            .iter()
+            .find(|old| old["type"] == serde_json::json!(condition.kind.as_str()))
+        {
+            let unchanged = old["status"] == serde_json::json!(condition.status.as_str())
+                && old["reason"] == serde_json::json!(condition.reason)
+                && old["message"] == serde_json::json!(condition.message)
+                && old["observedGeneration"] == serde_json::json!(condition.observed_generation);
+            if unchanged {
+                if let Some(time) = old["lastTransitionTime"].as_str() {
+                    condition.last_transition_time = time.to_owned();
+                }
+            }
+        }
+    }
+    status
 }
 
-/// Decide ownership from the live object. The rule fails closed: an explicit
+/// Whose object the live one is. The rule fails closed: an explicit
 /// `managed-by` label that is not this operator's makes the object foreign
 /// even if it carries the gateway as controller owner — a stolen label with a
 /// kept owner reference is exactly what a hostile or buggy adoption looks
 /// like. An object with no `managed-by` label is the operator's only when the
-/// gateway is its controller owner. An unlabeled object created by `kubectl`
-/// is therefore never adopted: ADR-0011 section 8.14 gives the operator one
-/// owner, and silently taking over a foreign Deployment is the opposite of
-/// that.
-fn ownership_of(live: &serde_json::Value) -> WorkloadOwner {
+/// reconciled gateway is its controller owner by name. An unlabeled object
+/// created by `kubectl` is therefore never adopted: ADR-0011 section 8.14
+/// gives the operator one owner, and silently taking over a foreign object is
+/// the opposite of that. The label itself is forgeable by anyone with patch
+/// RBAC in the namespace; the real boundary is that RBAC, not this check.
+fn is_operator_owned(
+    live: &serde_json::Value,
+    gateway_name: &str,
+    gateway_uid: Option<&str>,
+) -> bool {
     let metadata = &live["metadata"];
     let managed_by = metadata["labels"][MANAGED_BY_LABEL].as_str();
     if let Some(managed_by) = managed_by {
-        return if managed_by == MANAGED_BY_VALUE {
-            WorkloadOwner::Operator
-        } else {
-            WorkloadOwner::Other
-        };
+        return managed_by == MANAGED_BY_VALUE;
     }
     if let Some(references) = metadata["ownerReferences"].as_array() {
         for reference in references {
             let controller = reference["controller"].as_bool().unwrap_or(false);
-            if controller && reference["kind"].as_str() == Some("CorviGateway") {
-                return WorkloadOwner::Operator;
+            let named = reference["name"].as_str() == Some(gateway_name);
+            let same_uid = match (gateway_uid, reference["uid"].as_str()) {
+                (Some(ours), Some(theirs)) => ours == theirs,
+                _ => true,
+            };
+            if controller && named && same_uid && reference["kind"].as_str() == Some("CorviGateway")
+            {
+                return true;
             }
         }
     }
-    WorkloadOwner::Other
-}
-
-/// The replica counts the live workload reports, if any.
-struct ObservedReplicas {
-    replicas: Option<i64>,
-    ready: Option<i64>,
-}
-
-impl ObservedReplicas {
-    const NONE: Self = Self {
-        replicas: None,
-        ready: None,
-    };
-}
-
-fn observed_replicas(live: Option<&serde_json::Value>) -> ObservedReplicas {
-    let Some(status) = live.map(|object| &object["status"]) else {
-        return ObservedReplicas::NONE;
-    };
-    ObservedReplicas {
-        replicas: status["replicas"].as_i64(),
-        ready: status["readyReplicas"].as_i64(),
-    }
-}
-
-/// Readiness is observed, never assumed: without workload status the
-/// condition is `Unknown`.
-fn readiness(observed: &ObservedReplicas, desired: i64) -> (ConditionStatus, &'static str) {
-    match observed.ready {
-        Some(ready) if ready >= desired && desired > 0 => {
-            (ConditionStatus::True, "AtDesiredReplicas")
-        }
-        Some(_) => (ConditionStatus::False, "ReplicasNotReady"),
-        None => (ConditionStatus::Unknown, "AwaitingWorkloadStatus"),
-    }
+    false
 }
 
 /// Encode a rendered workload as its Kubernetes manifest.
@@ -544,7 +786,7 @@ fn service_manifest(
         "metadata": {
             "name": name,
             "namespace": gateway.metadata.namespace,
-            "labels": *selector,
+            "labels": selector,
             "ownerReferences": owner_references(gateway),
         },
         "spec": {
@@ -580,20 +822,63 @@ fn parse_gateway(raw: &serde_json::Value) -> Result<CorviGateway, ParseError> {
     mail_operator::parse_gateway(&yaml)
 }
 
+/// The UID of a live object, before it has been parsed.
+fn uid_of(raw: &serde_json::Value) -> Option<&str> {
+    raw["metadata"]["uid"].as_str()
+}
+
 /// The generation of a live object, before it has been parsed.
 fn generation_of(raw: &serde_json::Value) -> i64 {
     raw["metadata"]["generation"].as_i64().unwrap_or(0)
 }
 
-/// Bound a message so a refusal cannot carry unbounded text into status.
-pub(crate) fn bounded(message: String) -> String {
+/// Bound a message so a refusal cannot carry unbounded text into status; the
+/// appended marker keeps the total inside the CRD's 1024-character bound.
+pub fn bounded(message: String) -> String {
     const MAX: usize = 1024;
-    if message.len() <= MAX {
+    const MARKER: usize = 3; // "..."
+    if message.chars().count() <= MAX {
         return message;
     }
-    let mut cut = MAX;
-    while !message.is_char_boundary(cut) {
-        cut -= 1;
+    let mut end = 0;
+    for (kept_index, (index, character)) in message.char_indices().enumerate() {
+        if kept_index == MAX - MARKER {
+            break;
+        }
+        end = index + character.len_utf8();
     }
-    format!("{}...", &message[..cut])
+    format!("{}...", &message[..end])
+}
+
+/// The replica counts the live workload reports, if any.
+struct ObservedReplicas {
+    replicas: Option<i64>,
+    ready: Option<i64>,
+}
+
+impl ObservedReplicas {
+    const NONE: Self = Self {
+        replicas: None,
+        ready: None,
+    };
+}
+
+fn observed_replicas(live: Option<&serde_json::Value>) -> ObservedReplicas {
+    let Some(status) = live.map(|object| &object["status"]) else {
+        return ObservedReplicas::NONE;
+    };
+    ObservedReplicas {
+        replicas: status["replicas"].as_i64(),
+        ready: status["readyReplicas"].as_i64(),
+    }
+}
+
+/// Readiness is observed, never assumed: without workload status the
+/// condition is `Unknown`. A converged zero-replica gateway is ready.
+fn readiness(observed: &ObservedReplicas, desired: i64) -> (ConditionStatus, &'static str) {
+    match observed.ready {
+        Some(ready) if ready >= desired => (ConditionStatus::True, "AtDesiredReplicas"),
+        Some(_) => (ConditionStatus::False, "ReplicasNotReady"),
+        None => (ConditionStatus::Unknown, "AwaitingWorkloadStatus"),
+    }
 }

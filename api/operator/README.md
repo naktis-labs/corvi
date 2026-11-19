@@ -1,9 +1,12 @@
 # Corvi operator API fixtures
 
 The Corvi Kubernetes **reconciler exists** (`crates/corvi-operator`): it
-watches `CorviGateway` resources, resolves them through the decision logic in
+periodically re-reads every `CorviGateway` in one namespace (a bounded resync
+poll, not a watch), resolves each through the decision logic in
 `crates/mail-operator`, applies the rendered workload with server-side apply
-and writes the gateway's status. Against a real API server (kwok, v1.36.1) it
+(without `force`: an apply conflict is an error, never a field steal),
+manages the ClusterIP Service for the enabled listeners and writes the
+gateway's status. Against a real API server (kwok, v1.36.1) it
 has been shown to create a hardened Deployment, a ClusterIP Service and status
 conditions, and to refuse a Helm-owned workload without touching it.
 
@@ -30,14 +33,19 @@ What exists:
   [docs/cluster-validation.md](../../docs/cluster-validation.md) for what that
   did and did not prove.
 
-What does **not** exist: a reconciler loop, an admission webhook server, a
-network policy controller, any Kubernetes RBAC enforcement, and any workload
-that the operator would submit. The CRDs alone decide the local syntax; the
-cross-resource rules below remain the reconciler's job. ADR-0012 §4 item 1
-(the structural CRD) is now satisfied for the schema, and the deployment
-hardening gates remain future work. The enforcement boundary for a deployed
-cluster is an independently installed admission policy and network policy —
-not this crate.
+What does **not** exist: the configuration snapshot pipeline (ADR-0012 §3) —
+the applied workload mounts the ConfigMap `corvi-gateway-<name>-config`, and
+nothing builds it yet, so **no pod of an applied workload can start**; every
+applied outcome therefore carries a `Degraded=True` condition with reason
+`SnapshotNotPublished` instead of implying readiness is reachable. Also still
+missing: an admission webhook server, a network policy controller, any
+Kubernetes RBAC enforcement, a watch-driven reconcile loop (the resync poll
+is the whole loop today), and any deployment of the reconciler itself. The
+CRDs alone decide the local syntax; the cross-resource rules below are the
+reconciler's job. ADR-0012 §4 item 1 (the structural CRD) is satisfied for
+the schema. The enforcement boundary for a deployed cluster is an
+independently installed admission policy and network policy — not this
+crate.
 
 ## Fixtures
 

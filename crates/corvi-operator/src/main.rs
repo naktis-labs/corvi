@@ -17,6 +17,14 @@ struct Config {
     resync_seconds: u64,
 }
 
+/// The default resync period in seconds (five minutes).
+const DEFAULT_RESYNC_SECONDS: u64 = 300;
+
+/// The resync period is clamped into this range: a period near zero would
+/// hammer the API server, an unbounded one would leave objects unreconciled.
+const MIN_RESYNC_SECONDS: u64 = 10;
+const MAX_RESYNC_SECONDS: u64 = 3600;
+
 /// Why the operator refused to start.
 struct ConfigError(String);
 
@@ -69,7 +77,9 @@ fn config_from_env() -> Result<Config, ConfigError> {
     let resync_seconds = std::env::var("CORVI_RESYNC_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(300);
+        .unwrap_or(DEFAULT_RESYNC_SECONDS)
+        .clamp(MIN_RESYNC_SECONDS, MAX_RESYNC_SECONDS);
+
     Ok(Config {
         namespace,
         profile,

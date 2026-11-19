@@ -54,6 +54,7 @@ struct FakeApi {
     workloads: Mutex<BTreeMap<String, serde_json::Value>>,
     services: Mutex<BTreeMap<String, serde_json::Value>>,
     status_patches: Mutex<Vec<serde_json::Value>>,
+    deleted: Mutex<Vec<String>>,
 }
 
 impl FakeApi {
@@ -84,6 +85,10 @@ impl FakeApi {
 
     fn service(&self, name: &str) -> Option<serde_json::Value> {
         self.services.lock().unwrap().get(name).cloned()
+    }
+
+    fn deleted(&self) -> Vec<String> {
+        self.deleted.lock().unwrap().clone()
     }
 }
 
@@ -131,12 +136,49 @@ impl ClusterApi for FakeApi {
         Ok(())
     }
 
+    async fn get_service(
+        &self,
+        _namespace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, corvi_operator::ApiFailure> {
+        Ok(self.service(name))
+    }
+
+    async fn delete_workload(
+        &self,
+        _namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), corvi_operator::ApiFailure> {
+        self.workloads
+            .lock()
+            .unwrap()
+            .remove(&format!("{kind}/{name}"));
+        self.deleted.lock().unwrap().push(format!("{kind}/{name}"));
+        Ok(())
+    }
+
+    async fn delete_service(
+        &self,
+        _namespace: &str,
+        name: &str,
+    ) -> Result<(), corvi_operator::ApiFailure> {
+        self.services.lock().unwrap().remove(name);
+        self.deleted.lock().unwrap().push(format!("Service/{name}"));
+        Ok(())
+    }
+
     async fn patch_status(
         &self,
         _namespace: &str,
-        _name: &str,
+        name: &str,
         patch: serde_json::Value,
     ) -> Result<(), corvi_operator::ApiFailure> {
+        // Merge like the API server would, so a second reconciliation sees
+        // the status the first one wrote.
+        if let Some(gateway) = self.gateways.lock().unwrap().get_mut(name) {
+            gateway["status"] = patch["status"].clone();
+        }
         self.status_patches.lock().unwrap().push(patch);
         Ok(())
     }
@@ -229,6 +271,12 @@ async fn a_valid_gateway_is_reconciled_to_a_hardened_workload() {
     assert_eq!(status["workloadKind"], "Deployment");
     assert_eq!(status["serviceName"], "corvi-gateway-primary");
     assert_eq!(status["desiredReplicas"], 1);
+
+    // The snapshot pipeline (ADR-0012 section 3) is not implemented: the
+    // status says so instead of implying the pods could ever start.
+    let degraded = condition_of(&status, ConditionKind::Degraded);
+    assert_eq!(degraded["status"], "True");
+    assert_eq!(degraded["reason"], "SnapshotNotPublished");
 }
 
 #[tokio::test]
@@ -309,7 +357,7 @@ async fn a_helm_owned_workload_is_never_adopted() {
     assert_eq!(
         reason,
         Refusal::OwnershipConflict {
-            workload: "Deployment/corvi-gateway-primary".to_owned(),
+            object: "Deployment/corvi-gateway-primary".to_owned(),
         }
     );
     assert_eq!(
@@ -544,6 +592,28 @@ async fn an_api_failure_surfaces_as_a_reconcile_error() {
         ) -> Result<(), corvi_operator::ApiFailure> {
             unreachable!()
         }
+        async fn get_service(
+            &self,
+            _namespace: &str,
+            _name: &str,
+        ) -> Result<Option<serde_json::Value>, corvi_operator::ApiFailure> {
+            unreachable!()
+        }
+        async fn delete_workload(
+            &self,
+            _namespace: &str,
+            _kind: &str,
+            _name: &str,
+        ) -> Result<(), corvi_operator::ApiFailure> {
+            unreachable!()
+        }
+        async fn delete_service(
+            &self,
+            _namespace: &str,
+            _name: &str,
+        ) -> Result<(), corvi_operator::ApiFailure> {
+            unreachable!()
+        }
         async fn patch_status(
             &self,
             _namespace: &str,
@@ -562,4 +632,239 @@ async fn an_api_failure_surfaces_as_a_reconcile_error() {
 fn the_operator_owns_a_stable_label_vocabulary() {
     assert_eq!(FIELD_MANAGER, "corvi-operator");
     assert_eq!(MANAGED_BY_VALUE, "corvi-operator");
+}
+
+#[tokio::test]
+async fn a_foreign_service_is_never_adopted() {
+    // The Service name is deterministic, so a foreign object can squat on it
+    // exactly like a workload can; the guard is the same (ADR-0011 8.14).
+    let (api, name) = gateway_fixture("gateway-primary");
+    let foreign = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": "corvi-gateway-primary",
+            "namespace": "corvi-system",
+            "labels": { MANAGED_BY_LABEL: "Helm" },
+        },
+        "spec": { "type": "LoadBalancer" },
+    });
+    api.services
+        .lock()
+        .unwrap()
+        .insert("corvi-gateway-primary".to_owned(), foreign);
+
+    let outcome = reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    let ReconcileOutcome::Refused { reason, status } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert_eq!(
+        reason,
+        Refusal::OwnershipConflict {
+            object: "Service/corvi-gateway-primary".to_owned(),
+        }
+    );
+    assert_eq!(
+        condition_of(&status_json(&status), ConditionKind::Degraded)["reason"],
+        "OwnershipConflict"
+    );
+    // The foreign Service is untouched.
+    assert_eq!(
+        api.service("corvi-gateway-primary").unwrap()["spec"]["type"],
+        "LoadBalancer"
+    );
+}
+
+#[tokio::test]
+async fn a_kind_transition_deletes_the_stale_workload() {
+    // A backend change flips the workload kind; the old operator-owned
+    // workload would keep the Service's selector matching it and keep
+    // receiving traffic with a stale configuration.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let stale = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {
+            "name": "corvi-gateway-primary",
+            "namespace": "corvi-system",
+            "labels": { MANAGED_BY_LABEL: MANAGED_BY_VALUE },
+        },
+        "spec": { "replicas": 2 },
+    });
+    let api = FakeApi::with_workload_from(api, "StatefulSet", "corvi-gateway-primary", stale);
+
+    let outcome = reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ReconcileOutcome::Applied { .. }));
+    assert!(
+        api.workload("StatefulSet", "corvi-gateway-primary")
+            .is_none(),
+        "the stale StatefulSet was deleted"
+    );
+    assert!(
+        api.deleted()
+            .contains(&"StatefulSet/corvi-gateway-primary".to_owned())
+    );
+    assert!(
+        api.workload("Deployment", "corvi-gateway-primary")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_suspended_gateway_with_an_invalid_spec_still_scales_down() {
+    // ADR-0013: a suspended gateway serves no mail — even when the spec can
+    // no longer be parsed. The operator-owned workload is scaled to zero
+    // from the raw spec, before the refusal is reported.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let mut broken = fixture("gateway-primary");
+    broken["spec"] = serde_json::json!({ "suspended": true });
+    api.gateways.lock().unwrap().insert(name.clone(), broken);
+
+    let owned = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "corvi-gateway-primary",
+            "namespace": "corvi-system",
+            "labels": { MANAGED_BY_LABEL: MANAGED_BY_VALUE },
+        },
+        "spec": { "replicas": 3 },
+    });
+    let api = FakeApi::with_workload_from(api, "Deployment", "corvi-gateway-primary", owned);
+
+    let outcome = reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    let ReconcileOutcome::Refused { reason, status } = outcome else {
+        panic!("expected a refusal, got {outcome:?}");
+    };
+    assert!(matches!(reason, Refusal::InvalidSpec { .. }));
+    let status = status_json(&status);
+    assert_eq!(
+        condition_of(&status, ConditionKind::Accepted)["reason"],
+        "SpecInvalid"
+    );
+    let degraded = condition_of(&status, ConditionKind::Degraded);
+    assert_eq!(degraded["reason"], "Suspended");
+    assert!(
+        degraded["message"]
+            .as_str()
+            .unwrap()
+            .contains("scaled to zero")
+    );
+    let live = api.workload("Deployment", "corvi-gateway-primary").unwrap();
+    assert_eq!(live["spec"]["replicas"], 0, "no mail-serving replicas");
+}
+
+#[tokio::test]
+async fn an_operator_owned_service_is_removed_when_no_listener_is_enabled() {
+    // Disabling every listener must remove the Service an earlier
+    // reconciliation created, or it keeps routing the disabled ports.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let mut no_listeners = fixture("gateway-primary");
+    no_listeners["spec"]["listeners"] = serde_json::json!({
+        "http": { "enabled": false },
+        "smtpSubmission": { "enabled": false },
+    });
+    api.gateways
+        .lock()
+        .unwrap()
+        .insert(name.clone(), no_listeners);
+    api.services.lock().unwrap().insert(
+        "corvi-gateway-primary".to_owned(),
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "corvi-gateway-primary",
+                "namespace": "corvi-system",
+                "labels": { MANAGED_BY_LABEL: MANAGED_BY_VALUE },
+            },
+            "spec": { "type": "ClusterIP" },
+        }),
+    );
+
+    let outcome = reconcile_gateway(&api, "corvi-system", &name, &profile(), NOW)
+        .await
+        .unwrap();
+    let ReconcileOutcome::Applied { service, .. } = outcome else {
+        panic!("expected an applied workload, got {outcome:?}");
+    };
+    assert_eq!(service, None);
+    assert!(api.service("corvi-gateway-primary").is_none());
+    assert!(
+        api.deleted()
+            .contains(&"Service/corvi-gateway-primary".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn unchanged_conditions_keep_their_transition_time() {
+    // A condition whose content did not change did not transition: its
+    // lastTransitionTime survives a resync, and a changed condition is
+    // re-stamped.
+    let (api, name) = gateway_fixture("gateway-primary");
+    let first = reconcile_gateway(&api, "corvi-system", &name, &profile(), 1_000_000)
+        .await
+        .unwrap();
+    assert!(matches!(first, ReconcileOutcome::Applied { .. }));
+
+    // An unchanged resync re-writes the same conditions: they keep the
+    // transition time they already have, so the object does not churn.
+    let second = reconcile_gateway(&api, "corvi-system", &name, &profile(), 2_000_000)
+        .await
+        .unwrap();
+    assert!(matches!(second, ReconcileOutcome::Applied { .. }));
+
+    // The API server bumps the generation on a spec change; every condition
+    // is then re-stamped against the new generation.
+    api.gateways.lock().unwrap().get_mut(&name).unwrap()["metadata"]["generation"] =
+        serde_json::json!(4);
+    let third = reconcile_gateway(&api, "corvi-system", &name, &profile(), 3_000_000)
+        .await
+        .unwrap();
+    assert!(matches!(third, ReconcileOutcome::Applied { .. }));
+
+    let patches = api.status_patches.lock().unwrap();
+    assert_eq!(patches.len(), 3);
+    let time_of = |patch: &serde_json::Value, kind: &str| {
+        patch["status"]["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|condition| condition["type"] == serde_json::json!(kind))
+            .unwrap()["lastTransitionTime"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    for kind in ["Accepted", "Resolved", "Ready", "Degraded"] {
+        assert_eq!(
+            time_of(&patches[0], kind),
+            time_of(&patches[1], kind),
+            "{kind} did not change, so it did not transition"
+        );
+        assert_ne!(
+            time_of(&patches[1], kind),
+            time_of(&patches[2], kind),
+            "{kind} was re-evaluated against a new generation"
+        );
+    }
+}
+
+/// A refusal message is bounded before it can reach the status subresource,
+/// whose CRD schema allows at most 1024 characters.
+#[test]
+fn a_refusal_message_is_bounded() {
+    let bounded = corvi_operator::bounded("x".repeat(5000));
+    assert!(bounded.chars().count() <= 1024, "the bound is the CRD's");
+    assert!(bounded.ends_with("..."), "the truncation is visible");
+    // Multi-byte characters are cut on a char boundary, never mid-character.
+    let unicode = corvi_operator::bounded("é".repeat(3000));
+    assert!(unicode.chars().count() <= 1024);
+    assert_eq!(corvi_operator::bounded("short".to_owned()), "short");
 }

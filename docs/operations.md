@@ -44,6 +44,8 @@ The runner prints one line per gate and a summary that names the gates that **fa
 | crate dependency boundaries | The data plane cannot reach the operator, the provider-management crates or a database, except the one documented `mail-storage` waiver |
 | source contract schemas | The checked-in JSON Schemas validate. This is a **design** check: it says nothing about runtime behaviour |
 | documentation links | Every internal link resolves |
+| generated CRD manifests and generator tests | CRDs match their source schemas and conversion checks pass |
+| live operator cluster validation | Skipped by default; opt-in installs or updates CRDs and validates fixtures on the current cluster |
 | standalone gateway smoke test | A running process serves the checked REST and MCP surfaces, including the approval round trip |
 
 Two of these need a local virtual environment for the schema libraries:
@@ -56,7 +58,7 @@ The gates are a **quality gate, not a release authorization**. The licence is st
 
 ## What the gates do not cover
 
-- No gate talks to a provider, a registry, a cluster or an OAuth endpoint. See [Compatibility](compatibility.md) for the full list of surfaces that have never met a remote peer.
+- No gate talks to a provider, a registry or an OAuth endpoint. Cluster validation runs only with `CORVI_CLUSTER_VALIDATION=1` and changes the current cluster; see [cluster validation](cluster-validation.md). See [Compatibility](compatibility.md) for the full list of surfaces that have never met a remote peer.
 - The schema gate validates design documents, not the code that implements them.
 - The smoke test binds a loopback port and uses a fixture mailbox. It proves the process starts, validates its configuration and serves its own contract.
 

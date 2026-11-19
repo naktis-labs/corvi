@@ -1,10 +1,9 @@
 # Corvi operator API fixtures
 
 These are **design fixtures**, not installable manifests. The Corvi Kubernetes
-operator, its CRDs, its admission webhook and its network policy are **not
-implemented**: there is no cluster in this repository and no Kubernetes client
-in this crate. Nothing here talks to an API server, and no controller is
-claimed to run.
+operator, its admission webhook and its network policy are **not implemented**:
+there is no Kubernetes client in this crate and no controller is claimed to
+run.
 
 What exists:
 
@@ -16,13 +15,22 @@ What exists:
   this directory.
 * `deploy/operator/` — the workload shapes the renderer would submit, plus the
   independently installed policy fixture.
+* `api/operator/crds/` — **structural CRD manifests with OpenAPI v3 and CEL
+  invariants**, generated from the checked-in JSON Schemas by
+  `scripts/generate_crds.py`. They are derived, never hand-written, and the
+  release gate fails when the checked-in files drift from the generated
+  output. The API server accepts all four of them; see
+  [docs/cluster-validation.md](../../docs/cluster-validation.md) for what that
+  did and did not prove.
 
-What does **not** exist: a structural CRD manifest with OpenAPI v3 and CEL
-invariants, a reconciler loop, an admission webhook server, a network policy
-controller or any Kubernetes RBAC enforcement. ADR-0012 §4 item 1 (the
-structural CRD) and the deployment hardening gates remain future work, and the
-enforcement boundary for a deployed cluster is an independently installed
-admission policy and network policy — not this crate.
+What does **not** exist: a reconciler loop, an admission webhook server, a
+network policy controller, any Kubernetes RBAC enforcement, and any workload
+that the operator would submit. The CRDs alone decide the local syntax; the
+cross-resource rules below remain the reconciler's job. ADR-0012 §4 item 1
+(the structural CRD) is now satisfied for the schema, and the deployment
+hardening gates remain future work. The enforcement boundary for a deployed
+cluster is an independently installed admission policy and network policy —
+not this crate.
 
 ## Fixtures
 
@@ -62,3 +70,11 @@ mailboxes, contributes no identities to any gateway). A provider with
 `spec.role: managementOnly` is the brief's management-only provider: it may
 own no mailbox and may not be bound to a gateway. The reference contract of
 `api/mail-resource-ownership.schema.json` is otherwise unchanged.
+
+## Live cluster validation
+
+Cluster validation is skipped by default. Set `CORVI_CLUSTER_VALIDATION=1`
+for `scripts/validate_cluster.sh` or the release gates only after checking
+`kubectl config current-context`: it installs or updates cluster-scoped CRDs
+and creates the `corvi-system` namespace if absent. Use a disposable test
+cluster; see [cluster validation](../../docs/cluster-validation.md).

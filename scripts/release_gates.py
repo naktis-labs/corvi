@@ -13,8 +13,9 @@ from a second run of the same tests: cargo reports each test target's result,
 and every subject gate names the packages that carry it. One run, one truth,
 and no gate that can be green because nobody looked at it.
 
-It changes nothing and publishes nothing. Licensing and publication stay
-blocked on the explicit owner decision (ADR-0001 section 14), and this script
+By default it does not modify a cluster or publish anything. An explicitly
+opted-in cluster validation can install CRDs and create a namespace.
+Licensing and publication stay blocked on the explicit owner decision (ADR-0001 section 14), and this script
 does not create a release, a tag or an artifact.
 
 Usage:
@@ -178,6 +179,52 @@ def gate_doc_links() -> tuple[str, str]:
     return "failed", output[-2000:]
 
 
+def gate_generated_crds() -> tuple[str, str]:
+    """The checked-in CRD manifests must match the generated output.
+
+    This gate needs no cluster: it regenerates the manifests from the
+    checked-in JSON Schemas and compares them with the files in the
+    repository.
+    """
+    status, output = run("python3 scripts/generate_crds.py --check")
+    if status == 0:
+        return "passed", output.splitlines()[0] if output else "the CRDs match"
+    return "failed", output[-2000:]
+
+
+def gate_cluster_validation() -> tuple[str, str]:
+    """The generated CRDs and the operator fixtures against a real API server.
+
+    The validation itself lives in scripts/validate_cluster.sh because it
+    needs a cluster. Without one the gate is skipped, and a skipped gate is
+    never reported as passed.
+    """
+    status, output = run("bash scripts/validate_cluster.sh")
+    if status == 0:
+        return "passed", "the API server accepted the CRDs and the fixtures"
+    if status == 2:
+        detail = next(
+            (line for line in output.splitlines() if line.startswith("SKIPPED:")),
+            "cluster validation unavailable",
+        )
+        return "skipped", detail
+    return "failed", output[-3000:]
+
+
+def gate_crd_generator_tests() -> tuple[str, str]:
+    """The CRD generator's own tests must pass.
+
+    They cover the decisions the cluster cannot show: how a rejected keyword
+    is translated, and how a recursive reference is refused.
+    """
+    status, output = run(
+        f"{' '.join(python_command())} -m unittest tests.test_generate_crds tests.test_cluster_validation"
+    )
+    if status == 0:
+        return "passed", output.splitlines()[-1] if output else "the tests passed"
+    return "failed", output[-2000:]
+
+
 def gate_smoke() -> tuple[str, str]:
     """The standalone gateway must serve its checked surfaces.
 
@@ -252,6 +299,9 @@ def main() -> int:
     record("crate dependency boundaries", gate_boundaries)
     record("source contract schemas", gate_contracts)
     record("documentation links", gate_doc_links)
+    record("generated CRD manifests", gate_generated_crds)
+    record("CRD generator tests", gate_crd_generator_tests)
+    record("operator resources against a live API server", gate_cluster_validation)
 
     if not arguments.fast:
         for name, gate_packages in SUBJECT_GATES:

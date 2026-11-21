@@ -1,0 +1,18 @@
+[package]
+name = "mail-jmap"
+description = "Native JMAP client for Corvi's provider-neutral upstream transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mail-core = { path = "../mail-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

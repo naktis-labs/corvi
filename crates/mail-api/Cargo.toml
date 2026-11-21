@@ -1,0 +1,36 @@
+[package]
+name = "mail-api"
+description = "Corvi's standalone REST and MCP mail gateway: one service pipeline, two protocol adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mail-core = { path = "../mail-core" }
+mail-config = { path = "../mail-config" }
+mail-jmap = { path = "../mail-jmap" }
+mail-policy = { path = "../mail-policy" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.3"
+
+# The gateway is the one data-plane crate that terminates a network
+# listener. The HTTP stack is the gateway's own front door and reaches no
+# control-plane, operator or provider-management module, which is what
+# ADR-0015 section 13 asks the boundary check to protect.
+axum = { version = "0.8", features = ["json"] } # allow-dependency: axum
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] } # allow-dependency: tokio
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

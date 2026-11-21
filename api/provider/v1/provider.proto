@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package corvi.provider.v1;
+
+// Provider administration is an authenticated mTLS control-plane surface.
+//
+// A provider plugin is a third-party OCI image (ADR-0001), so the peer
+// identity is authorized before dispatch. Configuration is not published
+// here: that is the control-plane configuration service in
+// corvi.config.v1.
+//
+// Servers enforce a 1 MiB (1048576 byte) limit on every message and
+// authorize the peer identity before dispatch.
+//
+// Every call carries a deadline. The server abandons a call that outlives
+// its deadline and reports the deadline exceeded rather than the provider's
+// answer.
+//
+// The operation, protocol and status vocabularies below are closed. A name
+// outside them is refused, never interpreted.
+//
+// Allowlisted operations:
+//   list_domains
+//   get_domain
+//   create_domain
+//   update_domain
+//   list_mailboxes
+//   get_mailbox
+//   create_mailbox
+//   update_mailbox
+//   rotate_mailbox_password
+//   list_aliases
+//   create_alias
+//   update_alias
+//   list_forwardings
+//   create_forwarding
+//   update_forwarding
+//   list_sender_identities
+//   create_sender_identity
+//   update_sender_identity
+//   get_usage
+//   get_health
+//
+// Destructive upstream actions are not in the allowlist. This contract never
+// advertises, requests or dispatches delete_domain or delete_mailbox.
+//
+// Allowlisted read protocols:
+//   imap
+//   jmap
+//
+// Allowlisted submission protocols:
+//   smtp
+//   jmap
+//
+// "disabled" is a client-side choice, not a provider capability: a provider
+// never advertises it and a control plane may always select it.
+//
+// Allowlisted statuses:
+//   ok
+//   unsupported_operation
+//   not_configured
+//   validation_failed
+//   provider_outage
+//   drift
+
+service ProviderAdmin {
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+message GetCapabilitiesRequest { uint32 contract_version = 1; }
+message GetCapabilitiesResponse {
+  uint32 contract_version = 1;
+  // Operation names from the allowlist above.
+  repeated string operations = 2;
+  // Read protocols from the allowlist above.
+  repeated string read_protocols = 3;
+  // Submission protocols from the allowlist above.
+  repeated string submission_protocols = 4;
+}
+message SecretReference {
+  // Opaque name only; never put secret values or URLs in this message.
+  //
+  // The name is untrusted input. It is mapped through a control-plane-owned
+  // allowlist and is never treated as a path or a Kubernetes Secret name.
+  string name = 1;
+}
+message ExecuteRequest {
+  uint32 contract_version = 1;
+  // Must be one of the allowlisted operation names. Any other name is
+  // refused with the unsupported_operation status.
+  string operation = 2;
+  // At most 1 MiB (1048576 bytes).
+  bytes bounded_payload = 3;
+  SecretReference credential_ref = 4;
+}
+message ExecuteResponse {
+  uint32 contract_version = 1;
+  // One of the allowlisted statuses.
+  string status = 2;
+  // At most 1 MiB (1048576 bytes).
+  bytes bounded_payload = 3;
+  // The refused operation name. Set only when the status is
+  // unsupported_operation.
+  string unsupported_operation = 4;
+}

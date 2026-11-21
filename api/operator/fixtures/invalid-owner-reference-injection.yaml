@@ -1,0 +1,15 @@
+# Invalid: the operator sets its own ownerReferences. A user-supplied one
+# could impersonate an unrelated owner in the same namespace.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+  ownerReferences:
+    - apiVersion: corvi.naktis.eu/v1alpha1
+      kind: CorviGateway
+      name: primary
+      uid: 00000000-0000-0000-0000-000000000001
+      controller: true
+      blockOwnerDeletion: true
+spec: {}

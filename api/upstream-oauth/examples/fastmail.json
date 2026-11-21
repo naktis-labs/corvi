@@ -1,0 +1,31 @@
+{
+  "apiVersion": "corvi.naktis.eu/v1alpha1",
+  "kind": "UpstreamOAuthProvider",
+  "providerId": "fastmail",
+  "issuer": "https://oauth.fastmail.example",
+  "client": {
+    "clientId": "fastmail-example-client-id",
+    "type": "confidential",
+    "registration": "preRegistered",
+    "clientSecretRef": "secret://provider/fastmail-client-secret",
+    "redirectUris": ["https://auth.corvi.example/oauth/upstream/callback/fastmail"],
+    "pkce": "S256"
+  },
+  "endpoints": {
+    "authorization": "https://oauth.fastmail.example/oauth/authorize",
+    "token": "https://oauth.fastmail.example/oauth/token",
+    "revocation": "https://oauth.fastmail.example/oauth/revoke"
+  },
+  "flows": ["authorizationCodePkce"],
+  "scopes": {
+    "read": ["jmap"],
+    "send": ["jmap"]
+  },
+  "transportMechanisms": ["jmapBearer"],
+  "refresh": {
+    "supported": true,
+    "rotationExpected": false,
+    "strategy": "singleOwner"
+  },
+  "accountVerification": "jmapSession"
+}

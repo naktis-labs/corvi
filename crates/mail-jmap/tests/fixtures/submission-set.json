@@ -1,0 +1,7 @@
+{
+  "accountId": "acct-personal",
+  "oldState": "state-2",
+  "newState": "state-3",
+  "created": {"send": {"id": "S-submission-1", "sendAt": "2026-01-02T10:05:00Z", "undoStatus": "final"}},
+  "notCreated": {}
+}

@@ -1,0 +1,31 @@
+# CRD-shaped fixture: a single-writer SQLite CorviGateway.
+# One replica, one pre-created claim. The claim is referenced, never owned:
+# the operator creates and deletes no PVC.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: sqlite
+  namespace: corvi-system
+  uid: 00000000-0000-0000-0000-000000000002
+  generation: 1
+spec:
+  replicas: 1
+  suspended: false
+  listeners:
+    http:
+      enabled: true
+    smtpSubmission:
+      enabled: false
+  authorization:
+    mode: embedded
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: sqlite
+    existingClaimName: corvi-gateway-sqlite-data
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

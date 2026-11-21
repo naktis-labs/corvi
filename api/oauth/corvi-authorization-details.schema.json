@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/2020-12/schema",
+  "$id": "https://corvi.naktis.eu/schemas/corvi-oauth/authorization-details/v1alpha1",
+  "title": "Corvi authorization details in a token response",
+  "description": "The scoped `authorization_details` a Corvi token response carries under RFC 9396. There is one entry per consented identity; entries are never merged across identities, and an entry names the actions that identity alone was granted. This is a design contract, not a running endpoint.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "type",
+      "identityId",
+      "actions"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "corvi_mail",
+        "description": "The Corvi-defined authorization detail type; not a standard OAuth type."
+      },
+      "identityId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "description": "Opaque Corvi MailIdentity identifier; never an email address or a provider account id."
+      },
+      "actions": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "mail:identities:list",
+            "mail:messages:list",
+            "mail:messages:search",
+            "mail:messages:read",
+            "mail:attachments:read",
+            "mail:messages:send",
+            "mail:submissions:read",
+            "mail:messages:subscribe"
+          ]
+        }
+      },
+      "constraints": {
+        "$ref": "#/$defs/constraints"
+      }
+    }
+  },
+  "$defs": {
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipientDomains": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 253
+          }
+        },
+        "unattendedSend": {
+          "type": "boolean",
+          "const": false,
+          "description": "A consent cannot approve an unattended send; only a separately designated server policy may."
+        },
+        "maxMessagesPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      }
+    }
+  },
+  "x-corvi": {
+    "standard": "RFC 9396",
+    "detailType": "corvi_mail",
+    "notes": "Provider OAuth tokens (ADR-0008) are never Corvi authorization details and never authenticate a Corvi request."
+  }
+}

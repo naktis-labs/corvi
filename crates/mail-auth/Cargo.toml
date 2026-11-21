@@ -1,0 +1,23 @@
+[package]
+name = "mail-auth"
+description = "Corvi's OAuth authorization server and protected-resource grant logic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mail-core = { path = "../mail-core" }
+mail-storage = { path = "../mail-storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+hmac = "0.12"
+base64 = "0.22"
+getrandom = "0.3"
+
+[lints]
+workspace = true

@@ -102,6 +102,8 @@ $ python3 scripts/check_crate_boundaries.py
 $ python3 scripts/check_doc_links.py
 ```
 
+Install the source-contract test dependencies with `python3 -m pip install -r tests/requirements-contracts.txt`, then run `python3 -m unittest discover -v`. These checks validate design documents and examples, not runtime conformance.
+
 `scripts/check_crate_boundaries.py` enforces the data-plane dependency rule: no Kubernetes, operator, provider-management, database or HTTP-client dependency may appear in a data-plane crate, and the implemented crates' dependency sets are pinned. `scripts/check_doc_links.py` verifies that every internal documentation link resolves.
 
 > **Project status:** Architecture and early implementation. The ADRs describe intended behavior; the crates that exist implement a stated subset of it, and the rest is not yet written.

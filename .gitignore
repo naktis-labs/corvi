@@ -13,3 +13,8 @@
 .env
 .env.*
 !.env.example
+
+# Local Python tooling and agent scratch
+__pycache__/
+*.pyc
+/.superpowers/

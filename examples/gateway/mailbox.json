@@ -1,0 +1,45 @@
+{
+  "messages": [
+    {
+      "id": "m-1",
+      "mailbox": "INBOX",
+      "from": {"address": "sender@example.com", "displayName": "Sender"},
+      "to": [{"address": "me@example.com"}],
+      "reply_to": [{"address": "sender@example.com"}],
+      "subject": "Invoice 2026",
+      "textBody": "Please pay the invoice of 42 euros before the end of the month.",
+      "date": "2026-01-02T10:00:00Z",
+      "flags": ["seen"],
+      "trustedRecipient": "me@example.com",
+      "attachments": [
+        {
+          "id": "a-1",
+          "filename": "invoice.txt",
+          "contentType": "text/plain",
+          "base64": "aW52b2ljZSAyMDI2Cg=="
+        }
+      ]
+    },
+    {
+      "id": "m-2",
+      "mailbox": "INBOX",
+      "from": {"address": "secret@example.com"},
+      "to": [{"address": "me@example.com"}],
+      "subject": "Your one-time code",
+      "textBody": "Code 123456",
+      "date": "2026-01-01T10:00:00Z",
+      "trustedRecipient": "me@example.com"
+    },
+    {
+      "id": "m-3",
+      "mailbox": "INBOX",
+      "from": {"address": "colleague@example.com", "displayName": "Colleague"},
+      "to": [{"address": "me@example.com"}],
+      "cc": [{"address": "team@example.com"}],
+      "subject": "Lunch on Thursday?",
+      "textBody": "Are you free for lunch on Thursday?",
+      "date": "2025-12-30T08:30:00Z",
+      "trustedRecipient": "me@example.com"
+    }
+  ]
+}

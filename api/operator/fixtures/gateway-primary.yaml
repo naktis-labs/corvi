@@ -1,0 +1,32 @@
+# CRD-shaped fixture: a CorviGateway instance as the operator reads it.
+# NOT an installable CRD: see docs/adr/0012-corvi-gateway-deployment-crd.md and
+# api/corvi-gateway.schema.json for the design contract, api/operator/README.md
+# for what is implemented.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: primary
+  namespace: corvi-system
+  uid: 00000000-0000-0000-0000-000000000001
+  generation: 3
+spec:
+  replicas: 1
+  suspended: false
+  listeners:
+    http:
+      enabled: true
+    smtpSubmission:
+      enabled: true
+  authorization:
+    mode: external
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: ephemeral
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 256Mi

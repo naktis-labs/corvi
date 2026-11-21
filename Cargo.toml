@@ -1,8 +1,25 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mail-admin",
+    "crates/mail-api",
+    "crates/mail-bridge",
+    "crates/mail-auth",
     "crates/mail-core",
+    "crates/mail-config",
+    "crates/mail-credential",
+    "crates/mail-imap",
+    "crates/mail-jmap",
+    "crates/mail-operator",
+    "crates/corvi-operator",
     "crates/mail-policy",
+    "crates/mail-policy-engine",
+    "crates/mail-queue",
+    "crates/mail-smtp",
+    "crates/mail-telemetry",
+    "crates/mail-storage",
+    "crates/mail-upstream-oauth",
+    "crates/provider-migadu",
 ]
 
 [workspace.package]
@@ -18,7 +35,17 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+kube = { version = "2.0", default-features = false, features = ["client", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+k8s-openapi = { version = "0.26", default-features = false, features = ["v1_34"] }
+tokio = { version = "1", default-features = false }
 regex = "1"
+url = "2"
+hex = "0.4"
+ring = "0.17"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

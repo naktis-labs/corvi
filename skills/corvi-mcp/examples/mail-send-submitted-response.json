@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"sub_1a2b3c\",\"identityId\":\"personal\",\"status\":\"submitted\",\"createdAt\":\"2026-01-02T10:05:00Z\",\"updatedAt\":\"2026-01-02T10:05:00Z\",\"idempotencyDurable\":false}"
+      }
+    ],
+    "structuredContent": {
+      "id": "sub_1a2b3c",
+      "identityId": "personal",
+      "status": "submitted",
+      "createdAt": "2026-01-02T10:05:00Z",
+      "updatedAt": "2026-01-02T10:05:00Z",
+      "idempotencyDurable": false
+    },
+    "isError": false
+  }
+}

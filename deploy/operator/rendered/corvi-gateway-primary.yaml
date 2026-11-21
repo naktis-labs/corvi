@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: corvi-gateway-primary
+  namespace: corvi-system
+  labels:
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/instance: primary
+    app.kubernetes.io/managed-by: corvi-operator
+    app.kubernetes.io/name: corvi-gateway
+    corvi.naktis.eu/gateway: primary
+  annotations: {}
+  ownerReferences:
+  - apiVersion: corvi.naktis.eu/v1alpha1
+    kind: CorviGateway
+    name: primary
+    uid: 00000000-0000-0000-0000-000000000001
+    controller: true
+    blockOwnerDeletion: true
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: corvi-gateway
+      corvi.naktis.eu/gateway: primary
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      name: ''
+      namespace: corvi-system
+      labels:
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/instance: primary
+        app.kubernetes.io/managed-by: corvi-operator
+        app.kubernetes.io/name: corvi-gateway
+        corvi.naktis.eu/gateway: primary
+      annotations: {}
+    spec:
+      serviceAccountName: corvi-gateway
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: gateway
+        image: ghcr.io/naktis-labs/corvi-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: smtp-submission
+          containerPort: 2525
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          capabilities:
+            drop:
+            - ALL
+            add: []
+          seccompProfile:
+            type: RuntimeDefault
+          procMount: Default
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+            ephemeral-storage: 256Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/corvi
+          readOnly: true
+        - name: auth
+          mountPath: /etc/corvi/auth
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+      volumes:
+      - name: config
+        configMap:
+          name: corvi-gateway-primary-config
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: auth
+        secret:
+          secretName: corvi-resource-server
+          defaultMode: 420

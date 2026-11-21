@@ -1,0 +1,7 @@
+{
+  "accountId": "acct-personal",
+  "oldState": "state-1",
+  "newState": "state-2",
+  "created": {"draft": {"id": "M-draft-1", "blobId": "B-draft-1", "threadId": "T-thread-2", "mailboxIds": {}}},
+  "notCreated": {}
+}

@@ -1,0 +1,19 @@
+[package]
+name = "mail-credential"
+description = "MailCredential admission, continuous revalidation and connection-Secret publishing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

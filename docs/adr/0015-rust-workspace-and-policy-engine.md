@@ -35,6 +35,8 @@ crates/
 
 `mail-core` and `mail-policy` are implemented now. The remaining crates follow the phase order in ADR-0001 section 12.
 
+**`corvi-operator` is the reconciler binary of phase 6.** When the Kubernetes phase landed, the decision logic stayed in `mail-operator` (pure, dependency-light, cluster-free) and the API-server layer moved into a new control-plane crate `corvi-operator`, which depends on `kube`, `tokio` and `mail-operator` and is the only crate allowed a Kubernetes client. This is the layout evolution the ADR's status anticipated: the data plane still cannot see either crate.
+
 ### Crate rules
 
 **`mail-core` holds provider-neutral types only.** No transport, no network, no Kubernetes. It defines the normalized message model that every upstream adapter projects into, and it is where the distinction between message-authored headers and trusted delivery metadata is encoded.

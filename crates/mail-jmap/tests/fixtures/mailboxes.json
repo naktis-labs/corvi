@@ -1,0 +1,8 @@
+{
+  "accountId": "acct-personal",
+  "list": [
+    {"id": "mbx-inbox", "name": "INBOX", "role": "inbox", "sortOrder": 1, "totalEmails": 2, "unreadEmails": 0},
+    {"id": "mbx-archive", "name": "Archive", "role": "archive", "sortOrder": 2, "totalEmails": 0, "unreadEmails": 0}
+  ],
+  "notFound": []
+}

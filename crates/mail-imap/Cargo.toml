@@ -1,0 +1,15 @@
+[package]
+name = "mail-imap"
+description = "IMAP adapter for Corvi's provider-neutral upstream transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mail-core = { path = "../mail-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,75 @@
+# Corvi gateway example — disclosure policies
+#
+# The policy document is separate from the credential snapshot on purpose:
+# the snapshot holds **who** may act, the policy document holds **what** they
+# may see. An identity with no policy binding is disclosed nothing at all.
+#
+# The policy revision below is part of what a cursor and an approval are
+# bound to. Activating a new generation invalidates the ones issued under
+# the old one, so a client that keeps paging under a changed policy is told
+# that its cursor is stale rather than shown mail under the wrong rules.
+
+# The policy revision. Bump it whenever the rules below change.
+generation: 1
+
+policies:
+  # The default policy: mail is visible, HTML is sanitized, remote content
+  # is removed, and attachments may be downloaded.
+  - id: default
+    default_visibility: show
+    # When a rule's condition cannot be evaluated, the message is hidden.
+    # "Indeterminate is not clean" is the rule ADR-0003 exists to enforce.
+    on_indeterminate: hide
+    rendering:
+      html: sanitized
+      remote_content: strip
+      attachments: full
+      external_links: sanitize
+    rules:
+      # Authentication material is never disclosed, whatever the subject
+      # says. The rule matches on the classification the local classifier
+      # assigned, not on a regex over the body.
+      - id: hide-authentication-material
+        when: !classification_any
+          classes:
+            - auth.otp
+            - auth.mfa
+            - auth.password_reset
+            - auth.login_link
+            - credential.secret
+        then: !visibility
+          value: hide
+
+      # One-time codes that the classifier did not recognize are still
+      # hidden, because the subject is an untrusted hint.
+      - id: hide-one-time-codes
+        when: !text
+          field: subject
+          match: contains
+          value: one-time
+        then: !visibility
+          value: hide
+
+      # A message that carries attachments is disclosed, but its attachment
+      # filenames are redacted, so a filename cannot leak a secret.
+      - id: redact-attachment-filenames
+        when: !has_attachments
+          count: 1
+        then: !redact
+          redactions:
+            - field: attachment_filename
+              pattern: ".*"
+              replacement: "[attachment]"
+
+# Which policy applies to which identity. An identity that is not listed
+# here is disclosed nothing.
+bindings:
+  personal: default
+  work: default
+
+# Identities that may send without an interactive approval.
+#
+# This is the explicit unattended-send exception. It never bypasses the
+# action, identity or recipient checks; it only removes the approval round
+# trip. Leave it empty to require an approval for every send.
+unattended_send: []

@@ -1,0 +1,141 @@
+// Corvi policy decision point contract, version 1.
+//
+// This file is a *contract document*, not a compiled transport. The gRPC
+// transport is not implemented in this repository yet: ADR-0004 makes an
+// external PDP an explicitly opted-in data-plane dependency, and the crate
+// that will carry it (`mail-policy-engine`) currently exposes only the
+// in-process sandbox seam.
+//
+// The contract is deliberately narrow:
+//
+//   * The request carries an authenticated principal, a credential scope, an
+//     action, opaque resource and identity references, bounded
+//     classifications and explicitly allowlisted attributes. There is no
+//     field for a provider administrative secret and no field for a message
+//     body: a policy engine never receives raw mail.
+//   * The response carries an effect and typed obligations. It never carries a
+//     rewritten message body: Corvi owns parsing, redaction and projection.
+//   * A caller supplied `principal_id` is never authentication. The PDP
+//     authenticates the transport, not the principal it is told about.
+//
+// The typed Rust counterpart of this contract lives in
+// `crates/mail-policy-engine/src/contract.rs`.
+
+syntax = "proto3";
+
+package corvi.policy.v1;
+
+// The decision point of an optional external policy engine.
+service PolicyDecisionPoint {
+  // Decide one request.
+  rpc Evaluate(EvaluateRequest) returns (EvaluateResponse);
+
+  // Decide a batch of requests.
+  rpc EvaluateBatch(EvaluateBatchRequest) returns (EvaluateBatchResponse);
+}
+
+// The version of the input schema this contract carries.
+message EvaluateRequest {
+  // Corvi's own request identifier, used to correlate batch answers.
+  string request_id = 1;
+
+  // The authenticated principal. The PDP must not treat this as proof of
+  // identity: the transport authenticates the caller.
+  string principal_id = 2;
+
+  // The credential scope the principal holds.
+  string credential_scope_id = 3;
+
+  // The requested action.
+  string action = 4;
+
+  // An opaque reference to the requested resource.
+  string resource_id = 5;
+
+  // The identity the request is made in.
+  string identity_id = 6;
+
+  // The configuration revision the decision applies to.
+  string configuration_revision = 7;
+
+  // The bounded classifications of the resource, for example `auth.otp`.
+  repeated string classifications = 8;
+
+  // The explicitly allowlisted attributes of the resource. Every name and
+  // every value is released by a local administrator policy.
+  map<string, string> attributes = 9;
+
+  // The version of the input schema. A PDP that does not implement it fails
+  // closed.
+  string input_schema_version = 10;
+}
+
+// The decision of the policy engine.
+message EvaluateResponse {
+  // The effect of the decision.
+  enum Effect {
+    // The effect is not one of the known effects. It fails closed.
+    EFFECT_UNSPECIFIED = 0;
+
+    // The action is permitted, subject to the obligations.
+    ALLOW = 1;
+
+    // The action is refused.
+    DENY = 2;
+
+    // The engine could not decide. It fails closed.
+    INDETERMINATE = 3;
+  }
+
+  // The effect.
+  Effect effect = 1;
+
+  // The typed obligations. An unknown obligation kind is an error, not an
+  // obligation that is ignored.
+  repeated DisclosureObligation obligations = 2;
+
+  // The revision of the policy the engine applied.
+  string policy_revision = 3;
+}
+
+// A typed restriction the engine asks Corvi to apply.
+message DisclosureObligation {
+  // The kind of restriction.
+  enum Kind {
+    // The kind is not one of the known kinds. It fails closed.
+    KIND_UNSPECIFIED = 0;
+
+    // Hide the message entirely.
+    HIDE_MESSAGE = 1;
+
+    // Redact one field of the message.
+    REDACT_FIELD = 2;
+
+    // Deny access to attachments.
+    DENY_ATTACHMENTS = 3;
+
+    // Sanitize the HTML body.
+    SANITIZE_HTML = 4;
+
+    // Remove external links.
+    REMOVE_EXTERNAL_LINKS = 5;
+  }
+
+  // The kind of restriction.
+  Kind kind = 1;
+
+  // The dotted path of the field, for `REDACT_FIELD` only.
+  string field_path = 2;
+}
+
+// A batch of requests.
+message EvaluateBatchRequest {
+  // The requests of the batch.
+  repeated EvaluateRequest requests = 1;
+}
+
+// The answers of a batch.
+message EvaluateBatchResponse {
+  // The answers, in the order of the requests.
+  repeated EvaluateResponse responses = 1;
+}

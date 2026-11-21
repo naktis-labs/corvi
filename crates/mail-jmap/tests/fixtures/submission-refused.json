@@ -1,0 +1,7 @@
+{
+  "accountId": "acct-personal",
+  "oldState": "state-2",
+  "newState": "state-3",
+  "created": {},
+  "notCreated": {"send": {"type": "invalidProperties", "properties": {"envelope.mailFrom": {"type": "invalidProperties"}}}}
+}

@@ -1,7 +1,7 @@
 # Corvi MCP server specification (proposed v1)
 
-- **Status:** Proposed, **not implemented**
-- **Date:** 2026-11-16
+- **Status:** Partially implemented; see [Capabilities](../capabilities.md) for the boundary
+- **Date:** 2026-11-16 (implementation status updated 2026-11-18)
 - **MCP protocol target:** `2026-07-28`
 - **Additional v1 capabilities:** MRTR elicitation, scoped resource subscriptions, optional Tasks extension
 - **Shared API decision:** [ADR-0005](../adr/0005-public-mail-api.md)

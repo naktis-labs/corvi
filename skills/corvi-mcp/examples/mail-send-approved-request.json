@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "mail_send",
+    "arguments": {
+      "identityId": "personal",
+      "to": [{"email": "someone@example.org"}],
+      "subject": "Hello",
+      "textBody": "A body.",
+      "idempotencyKey": "9f0c1f6c-2b1e-4a1c-9d0f-6b1f2a3c4d5e"
+    },
+    "inputResponses": {
+      "confirm_send": {"approved": true}
+    },
+    "requestState": "<the requestState from the previous result>",
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {"elicitation": {}}
+    }
+  }
+}

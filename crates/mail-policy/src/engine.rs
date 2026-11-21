@@ -14,6 +14,7 @@
 //!    policy's `on_indeterminate` decides, and the secure default is `hide`.
 
 use mail_core::{Class, NormalizedMessage};
+use serde::{Deserialize, Serialize};
 
 use crate::decision::{
     Decision, DefaultVisibility, OnIndeterminate, RedactableField, Redaction, Rendering, Visibility,
@@ -21,7 +22,10 @@ use crate::decision::{
 use crate::rule::{BooleanOp, Predicate, Rule, SubjectField, TextMatch, TextPredicate};
 
 /// A disclosure filter policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The policy is serializable so that a gateway can read it from its
+/// configuration and report the revision it applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterPolicy {
     /// The policy's identifier.
     pub id: String,
@@ -349,6 +353,7 @@ pub fn apply_redactions(message: &NormalizedMessage, decision: &Decision) -> Red
         from: message.from.clone(),
         to: message.to.clone(),
         cc: message.cc.clone(),
+        reply_to: message.reply_to.clone(),
         subject: message.subject.clone(),
         text_body: message.text_body.clone(),
         html_body: message.html_body.clone(),
@@ -362,9 +367,15 @@ pub fn apply_redactions(message: &NormalizedMessage, decision: &Decision) -> Red
 
     if decision.rendering.html == crate::decision::HtmlRendering::Deny {
         projected.html_body = None;
-    }
-    if decision.rendering.remote_content == crate::decision::RemoteContent::Strip {
-        strip_remote_content(&mut projected);
+    } else if let Some(html) = projected.html_body.as_deref() {
+        // A body that survives the HTML decision is always sanitized. The
+        // decision's link and remote-content policies choose *how* it is
+        // sanitized, but a body is never projected unsanitized.
+        projected.html_body = Some(crate::html::sanitize_html_with(
+            html,
+            link_mode(decision.rendering.external_links),
+            remote_mode(decision.rendering.remote_content),
+        ));
     }
     if decision.rendering.external_links == crate::decision::ExternalLinkPolicy::Deny {
         projected.links.clear();
@@ -398,6 +409,8 @@ pub struct RedactedMessage {
     pub to: Vec<mail_core::Address>,
     /// The carbon-copy recipients.
     pub cc: Vec<mail_core::Address>,
+    /// The reply-to addresses.
+    pub reply_to: Vec<mail_core::Address>,
     /// The subject, possibly redacted.
     pub subject: Option<String>,
     /// The plain-text body, possibly redacted.
@@ -422,6 +435,7 @@ fn apply_one(projected: &mut RedactedMessage, redaction: &Redaction) {
             RedactableField::RecipientAddress => {
                 projected.to.clear();
                 projected.cc.clear();
+                projected.reply_to.clear();
             }
             RedactableField::LinkTarget => {
                 for link in &mut projected.links {
@@ -467,7 +481,12 @@ fn apply_one(projected: &mut RedactedMessage, redaction: &Redaction) {
             }
         }
         RedactableField::RecipientAddress => {
-            for address in projected.to.iter_mut().chain(projected.cc.iter_mut()) {
+            for address in projected
+                .to
+                .iter_mut()
+                .chain(projected.cc.iter_mut())
+                .chain(projected.reply_to.iter_mut())
+            {
                 address.address = regex
                     .replace_all(&address.address, redaction.replacement.as_str())
                     .into_owned();
@@ -494,17 +513,26 @@ fn apply_one(projected: &mut RedactedMessage, redaction: &Redaction) {
     }
 }
 
-/// Remove references to remote resources from an HTML body.
-fn strip_remote_content(projected: &mut RedactedMessage) {
-    let Some(html) = projected.html_body.as_deref() else {
-        return;
-    };
-    projected.html_body = Some(crate::sanitize::strip_remote_resources(html));
+/// How a link policy applies to the links inside an HTML body.
+fn link_mode(policy: crate::decision::ExternalLinkPolicy) -> crate::html::LinkMode {
+    match policy {
+        crate::decision::ExternalLinkPolicy::Allow => crate::html::LinkMode::Keep,
+        crate::decision::ExternalLinkPolicy::Sanitize => crate::html::LinkMode::Sanitize,
+        crate::decision::ExternalLinkPolicy::Deny => crate::html::LinkMode::Deny,
+    }
+}
+
+/// How a remote-content policy applies to the references inside an HTML body.
+fn remote_mode(policy: crate::decision::RemoteContent) -> crate::html::RemoteMode {
+    match policy {
+        crate::decision::RemoteContent::Allow => crate::html::RemoteMode::Allow,
+        crate::decision::RemoteContent::Strip => crate::html::RemoteMode::Strip,
+    }
 }
 
 /// Reduce a URL to a form that does not carry a token in its query or path.
 fn sanitize_href(href: &str) -> String {
-    crate::sanitize::sanitize_url(href)
+    crate::html::sanitize_url(href)
 }
 
 #[cfg(test)]

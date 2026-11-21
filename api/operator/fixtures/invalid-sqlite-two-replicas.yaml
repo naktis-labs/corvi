@@ -1,0 +1,27 @@
+# Invalid: SQLite has exactly one writer. A replica count above one is
+# refused, including by kubectl scale (ADR-0012).
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: sqlite
+  namespace: corvi-system
+spec:
+  replicas: 2
+  listeners:
+    http:
+      enabled: true
+    smtpSubmission:
+      enabled: false
+  authorization:
+    mode: external
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: sqlite
+    existingClaimName: corvi-gateway-sqlite-data
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

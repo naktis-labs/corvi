@@ -1,0 +1,119 @@
+# CRD-shaped fixture: the ADR-0013 ownership chain.
+# Gateway <- provider (optional, singular) <- mailbox (required) <- identity
+# (required). The gateway carries no inverse list, and the provider without
+# gatewayRef is unbound: administered, never served.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: CorviGateway
+metadata:
+  name: primary
+  namespace: corvi-system
+  uid: 00000000-0000-0000-0000-000000000001
+  generation: 1
+spec:
+  replicas: 1
+  suspended: false
+  listeners:
+    http:
+      enabled: true
+    smtpSubmission:
+      enabled: true
+  authorization:
+    mode: external
+    configSecretRef:
+      name: corvi-resource-server
+  state:
+    backend: ephemeral
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 256Mi
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: fastmail
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: primary
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: migadu
+  namespace: corvi-system
+spec:
+  gatewayRef:
+    name: primary
+---
+# Unbound: no gatewayRef. Administered normally, contributes no identity to
+# any gateway. This is ADR-0013's management-only provider.
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailProvider
+metadata:
+  name: administration-only
+  namespace: corvi-system
+spec: {}
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: personal
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: fastmail
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: service
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: migadu
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: Mailbox
+metadata:
+  name: unserved
+  namespace: corvi-system
+spec:
+  providerRef:
+    name: administration-only
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: me
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: personal
+  address: me@example.com
+  isolation: dedicated
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: noreply
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: service
+  address: noreply@example.com
+  isolation: verified
+---
+apiVersion: corvi.naktis.eu/v1alpha1
+kind: MailIdentity
+metadata:
+  name: unserved-identity
+  namespace: corvi-system
+spec:
+  mailboxRef:
+    name: unserved
+  address: unserved@example.com
+  isolation: best_effort

@@ -1,0 +1,31 @@
+# Installed by GitOps, never by the operator. The operator reports a missing
+# policy and is not allowed to create an unrestricted substitute (ADR-0011 4).
+# Requires a CNI that enforces NetworkPolicy; enforcement is NOT verified here.
+# The resolver addresses are documentation addresses: replace them with the
+# cluster's own verified DNS endpoints, one per address family.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: corvi-gateway-default-deny
+  namespace: corvi-system
+  annotations:
+    app.kubernetes.io/managed-by: gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: corvi-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.53/32
+        - ipBlock:
+            cidr: 2001:db8::53/128
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
